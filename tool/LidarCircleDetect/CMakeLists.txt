@@ -28,3 +28,6 @@ target_link_libraries(${PROJECT_NAME}  ${PCL_LIBRARIES} ${OpenCV_LIBS} ${Boost_S
 add_executable(run_lidardetection src/run_lidar_detection.cpp )
 target_link_libraries(run_lidardetection ${PCL_LIBRARIES} ${OpenCV_LIBS} ${PROJECT_NAME} libjsoncpp.a)
 
+add_executable(calibration_target_mask src/calibration_target_mask.cpp )
+target_include_directories(calibration_target_mask PUBLIC ${PCL_INCLUDE_DIRS})
+target_link_libraries(calibration_target_mask ${PCL_LIBRARIES})
