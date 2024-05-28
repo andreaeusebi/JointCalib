@@ -19,6 +19,10 @@ class PointCloudViewer : public BasePointCloudViewer
     public:
         PointCloudViewer(const std::string& pcd_file, QWidget *parent = nullptr);
 
+        PointCloudViewer(pcl::visualization::PCLVisualizer::Ptr & viewer,
+                         const std::string & cloud_id, 
+                         QWidget *parent = nullptr);
+
         ~PointCloudViewer();
 
     public slots:
@@ -29,9 +33,13 @@ class PointCloudViewer : public BasePointCloudViewer
         void terminateProgram() override;
 
     private:
+        void init();
+
         void visualizationThread();
 
         pcl::visualization::PCLVisualizer::Ptr m_viewer;
+
+        std::string m_cloud_id;
 
         QDoubleSpinBox * m_rotation_spin_box;
         
@@ -48,7 +56,8 @@ class PointCloudViewer : public BasePointCloudViewer
 template<typename PointT>
 PointCloudViewer<PointT>::PointCloudViewer(const std::string& pcd_file, QWidget *parent) :
     BasePointCloudViewer(parent),
-    m_viewer            {new pcl::visualization::PCLVisualizer("PointCloudViewer Viewer")}
+    m_viewer            {new pcl::visualization::PCLVisualizer("PointCloudViewer")},
+    m_cloud_id          {"cloud"}
 {
     /* ----- Load PCD -----  */
 
@@ -62,12 +71,82 @@ PointCloudViewer<PointT>::PointCloudViewer(const std::string& pcd_file, QWidget 
 
     /* ----- Set up cloud visualization ----- */
 
-    m_viewer->addPointCloud<PointT>(cloud, "cloud");
-    
+    m_viewer->addPointCloud<PointT>(cloud, m_cloud_id);
+
+    this->init();
+}
+
+template<typename PointT>
+PointCloudViewer<PointT>::PointCloudViewer(pcl::visualization::PCLVisualizer::Ptr & viewer,
+                                           const std::string & cloud_id,
+                                           QWidget *parent) :
+    BasePointCloudViewer(parent),
+    m_viewer            (viewer),
+    m_cloud_id          {cloud_id}
+{
+    std::cout << "PointCloudViewer() BEGIN" << std::endl;
+
+    this->init();
+
+    std::cout << "PointCloudViewer() END" << std::endl;
+}
+
+template<typename PointT>
+PointCloudViewer<PointT>::~PointCloudViewer()
+{
+    std::cout << "~PointCloudViewer() BEGIN" << std::endl;
+
+    // Set running flag to false and join the visualization thread
+    m_running = false;
+
+    if (m_vis_thread.joinable())
+    {
+        m_vis_thread.join();
+    }
+
+    std::cout << "~PointCloudViewer() END" << std::endl;
+}
+
+template<typename PointT>
+void PointCloudViewer<PointT>::rotatePointCloud()
+{
+    std::cout << "rotatePointCloud()" << std::endl;
+
+    double angle = m_rotation_spin_box->value() * M_PI / 180.0;
+    Eigen::Affine3f transform = Eigen::Affine3f::Identity();
+    transform.rotate(Eigen::AngleAxisf(angle, Eigen::Vector3f::UnitY()));
+    m_viewer->updatePointCloudPose(m_cloud_id, transform);
+}
+
+template<typename PointT>
+void PointCloudViewer<PointT>::translatePointCloud()
+{
+    std::cout << "translatePointCloud()" << std::endl;
+
+    float tx = m_translation_x_slider->value() / 10.0;
+    Eigen::Affine3f transform = Eigen::Affine3f::Identity();
+    transform.translation() << tx, 0.0, 0.0;
+    m_viewer->updatePointCloudPose(m_cloud_id, transform);
+}
+
+template <typename PointT>
+void PointCloudViewer<PointT>::terminateProgram()
+{
+    std::cout << "terminateProgram()" << std::endl;
+
+    m_running = false;
+    qApp->quit();
+}
+
+template <typename PointT>
+void PointCloudViewer<PointT>::init()
+{
+    std::cout << "init() BEGIN" << std::endl;
+
     m_viewer->setBackgroundColor(0, 0, 0);
     m_viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE,
                                                1,
-                                               "cloud");
+                                               m_cloud_id);
     m_viewer->addCoordinateSystem(1.0);
     m_viewer->initCameraParameters();
 
@@ -102,53 +181,8 @@ PointCloudViewer<PointT>::PointCloudViewer(const std::string& pcd_file, QWidget 
     QPushButton *terminateButton = new QPushButton("Terminate");
     layout->addWidget(terminateButton);
     connect(terminateButton, &QPushButton::clicked, this, &PointCloudViewer::terminateProgram);
-}
 
-template<typename PointT>
-PointCloudViewer<PointT>::~PointCloudViewer()
-{
-    std::cout << "~PointCloudViewer() BEGIN" << std::endl;
-
-    // Set running flag to false and join the visualization thread
-    m_running = false;
-
-    if (m_vis_thread.joinable())
-    {
-        m_vis_thread.join();
-    }
-
-    std::cout << "~PointCloudViewer() END" << std::endl;
-}
-
-template<typename PointT>
-void PointCloudViewer<PointT>::rotatePointCloud()
-{
-    std::cout << "rotatePointCloud()" << std::endl;
-
-    double angle = m_rotation_spin_box->value() * M_PI / 180.0;
-    Eigen::Affine3f transform = Eigen::Affine3f::Identity();
-    transform.rotate(Eigen::AngleAxisf(angle, Eigen::Vector3f::UnitY()));
-    m_viewer->updatePointCloudPose("cloud", transform);
-}
-
-template<typename PointT>
-void PointCloudViewer<PointT>::translatePointCloud()
-{
-    std::cout << "translatePointCloud()" << std::endl;
-
-    float tx = m_translation_x_slider->value() / 10.0;
-    Eigen::Affine3f transform = Eigen::Affine3f::Identity();
-    transform.translation() << tx, 0.0, 0.0;
-    m_viewer->updatePointCloudPose("cloud", transform);
-}
-
-template <typename PointT>
-void PointCloudViewer<PointT>::terminateProgram()
-{
-    std::cout << "terminateProgram()" << std::endl;
-
-    m_running = false;
-    qApp->quit();
+    std::cout << "init() END" << std::endl;
 }
 
 template <typename PointT>
