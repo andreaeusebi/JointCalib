@@ -8,4 +8,4 @@ cmake-build-release/
 __pycache__/
 *.py[cod]
 *$py.class
-
+test_results/
