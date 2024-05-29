@@ -35,8 +35,8 @@ add_executable(create_calibration_target_mask src/create_calibration_target_mask
 target_include_directories(create_calibration_target_mask PUBLIC ${PCL_INCLUDE_DIRS})
 target_link_libraries(create_calibration_target_mask ${PCL_LIBRARIES} pthread)
 
-# Use Qt's MOC on the header file containing BasePointCloudViewer
-QT5_WRAP_CPP(MOC_FILES include/BasePointCloudViewer.h)
+# Use Qt's MOC on the header file containing BaseCloudAligner
+QT5_WRAP_CPP(MOC_FILES include/BaseCloudAligner.h)
 
 add_executable(pointcloud_viewer src/pointcloud_viewer.cpp ${MOC_FILES})
 target_link_libraries(pointcloud_viewer ${PCL_LIBRARIES} Qt5::Widgets pthread)
