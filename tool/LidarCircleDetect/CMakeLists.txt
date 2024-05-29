@@ -31,9 +31,9 @@ add_executable(run_lidardetection src/run_lidar_detection.cpp)
 target_include_directories(run_lidardetection PUBLIC ${PCL_INCLUDE_DIRS})
 target_link_libraries(run_lidardetection ${PCL_LIBRARIES} ${OpenCV_LIBS} ${PROJECT_NAME} libjsoncpp.a)
 
-add_executable(calibration_target_mask src/calibration_target_mask.cpp )
-target_include_directories(calibration_target_mask PUBLIC ${PCL_INCLUDE_DIRS})
-target_link_libraries(calibration_target_mask ${PCL_LIBRARIES} pthread)
+add_executable(create_calibration_target_mask src/create_calibration_target_mask.cpp )
+target_include_directories(create_calibration_target_mask PUBLIC ${PCL_INCLUDE_DIRS})
+target_link_libraries(create_calibration_target_mask ${PCL_LIBRARIES} pthread)
 
 # Use Qt's MOC on the header file containing BasePointCloudViewer
 QT5_WRAP_CPP(MOC_FILES include/BasePointCloudViewer.h)
