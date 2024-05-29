@@ -39,6 +39,7 @@ void LidarDetector::STLidarDetection(std::string pcds_dir) {
     std::cout << "Open dir error !" << std::endl;
     exit(1);
   }
+
   struct dirent *ptr;
   while ((ptr = readdir(dir)) != NULL) {
     if (strcmp(ptr->d_name, ".") != 0 && strcmp(ptr->d_name, "..") != 0) {
@@ -47,6 +48,8 @@ void LidarDetector::STLidarDetection(std::string pcds_dir) {
         std::cout << "Couldn't read file rabbit.pcd\n" << std::endl;
         exit(1);
       }
+
+      // concatenate all the pointclouds points together
       *cloud += *temp_cloude;
     }
   }
@@ -59,6 +62,8 @@ void LidarDetector::STLidarDetection(std::string pcds_dir) {
       edges_cloud(new pcl::PointCloud<pcl::PointXYZ>);
 
   velocloud = cloud;
+
+  /* ### ----- Filtering wrt x and y ranges ----- ### */
 
   pcl::PassThrough<pcl::PointXYZ> pass1;
   pass1.setInputCloud(velocloud);
@@ -73,11 +78,19 @@ void LidarDetector::STLidarDetection(std::string pcds_dir) {
   pass2.filter(*velo_filtered2);
 
   pcl::io::savePCDFileBinary("test_filtered.pcd", *velo_filtered2);
-  // Plane segmentation
+
+  /* ### ----- Plane segmentation ----- ### */
+  
+  // Extracted plane's coefficients
   pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
+  // Indices of the extracted plane inliers (points belonging to the plane)
   pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
+
   LOGI("this is here");
+  
+  // Specify the direction of the normal wrt the looked for plane (why y axis??)
   Eigen::Vector3f axis(0, 1, 0);
+
   pcl::SACSegmentation<pcl::PointXYZ> plane_segmentation;
   plane_segmentation.setModelType(pcl::SACMODEL_PARALLEL_PLANE);
   plane_segmentation.setDistanceThreshold(0.05);
@@ -89,6 +102,8 @@ void LidarDetector::STLidarDetection(std::string pcds_dir) {
   plane_segmentation.setInputCloud(velo_filtered2);
   plane_segmentation.segment(*inliers, *coefficients);
 
+  // Extract plane coefficients (a, b, c, d) and normalize wrt to 'd'
+  // These coefficients represent the equation of the plane in the form ax + by + cz + d = 0
   float a_final = coefficients->values[0] / coefficients->values[3];
   float b_final = coefficients->values[1] / coefficients->values[3];
   float c_final = coefficients->values[2] / coefficients->values[3];
@@ -97,10 +112,14 @@ void LidarDetector::STLidarDetection(std::string pcds_dir) {
   extract.setInputCloud(velo_filtered2);
   extract.setIndices(inliers);
   extract.filter(*plane_cloud);
-  // pcl::io::savePCDFileBinary("test_plane.pcd", *plane_cloud);
+  pcl::io::savePCDFileBinary("test_plane.pcd", *plane_cloud);
+
   edges_cloud = plane_cloud;
   pcl::PointCloud<pcl::PointXYZ>::Ptr plane_edges_cloud(
       new pcl::PointCloud<pcl::PointXYZ>);
+
+  /* ### ----- Calculate Rotation Matrix ----- ### */
+  // Compute angles representing the rotation required to align the plane with the x-axis.
 
   float theta_z = -atan(b_final / a_final);
   float theta_y = atan(c_final / a_final);
@@ -108,12 +127,13 @@ void LidarDetector::STLidarDetection(std::string pcds_dir) {
   R_y << cos(theta_y), 0, sin(theta_y), 0, 1, 0, -sin(theta_y), 0, cos(theta_y);
   R_z << cos(theta_z), -sin(theta_z), 0, sin(theta_z), cos(theta_z), 0, 0, 0, 1;
   Eigen::MatrixXf R = R_y * R_z;
+
   float average_x = 0.0;
   int cnt = 0;
   float min_pt_x = 99, max_pt_x = -99, min_pt_y = 99, max_pt_y = -99;
   for (pcl::PointCloud<pcl::PointXYZ>::iterator pt =
-           edges_cloud->points.begin();
-       pt < edges_cloud->points.end(); ++pt) {
+            edges_cloud->points.begin();
+        pt < edges_cloud->points.end(); ++pt) {
     Eigen::MatrixXf tmp(3, 1);
     tmp << pt->x, pt->y, pt->z;
     Eigen::MatrixXf changed = R * tmp;
@@ -133,23 +153,35 @@ void LidarDetector::STLidarDetection(std::string pcds_dir) {
 
     plane_edges_cloud->points.push_back(*pt);
   }
+
   average_x /= cnt;
   plane_edges_cloud->height = 1;
   plane_edges_cloud->width = plane_edges_cloud->points.size();
-  // pcl::io::savePCDFileASCII("plane_edges_cloud.pcd", *plane_edges_cloud);
+  pcl::io::savePCDFileASCII("plane_edges_cloud.pcd", *plane_edges_cloud);
+  
+  /* ### ----- Create Probability Map ----- ### */
+
+  // prob map unit of measure is 5mm
   std::vector<std::vector<bool>> pro_map(
       int(max_pt_y * 200) - int(min_pt_y * 200) + 1,
       std::vector<bool>(int(max_pt_x * 200) - int(min_pt_x * 200) + 1, false));
   for (pcl::PointCloud<pcl::PointXYZ>::iterator pt =
-           plane_edges_cloud->points.begin();
-       pt < plane_edges_cloud->points.end(); ++pt) {
+            plane_edges_cloud->points.begin();
+        pt < plane_edges_cloud->points.end(); ++pt) {
     pro_map[int(pt->y * 200) - int(min_pt_y * 200)]
-           [int(pt->x * 200) - int(min_pt_x * 200)] = true;
+            [int(pt->x * 200) - int(min_pt_x * 200)] = true;
   }
 
-  int max_cnt = 0;
-  int max_i, max_j;
+  /* ### ----- Circle detection ----- ### */
 
+  int max_cnt = 0;
+  int max_i, max_j; // x and y shift to get center of target
+
+  // since we know that the calibration target is 120cm x 120cm, we use a
+  // window with size 120cm x 120cm and slide all over the target plane to look
+  // for the highest occupancy, which denotes that we have centered the window on
+  // the calibration target. Other positions of the window would led to a lower 
+  // occupancy score.
   for (int i = 0; i + 240 < pro_map.size(); i += 2) {
     for (int j = 0; j + 240 < pro_map[0].size(); j += 2) {
       int cnt = 0;
@@ -166,6 +198,8 @@ void LidarDetector::STLidarDetection(std::string pcds_dir) {
       }
     }
   }
+
+  // Using the offsets just computed, get a rough initial estimate of the circles centers
   pcl::PointCloud<pcl::PointXYZ>::Ptr initial_centers(
       new pcl::PointCloud<pcl::PointXYZ>);
   pcl::PointXYZ center;
@@ -185,13 +219,15 @@ void LidarDetector::STLidarDetection(std::string pcds_dir) {
   center.z = float(max_i) / 200 + min_pt_y + 0.9;
   std::cout << center.y << ',' << center.z << std::endl;
   initial_centers->push_back(center);
+
   // circle detection
   pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_f(
       new pcl::PointCloud<pcl::PointXYZ>),
       centroid_candidates(new pcl::PointCloud<pcl::PointXYZ>);
+      
   for (pcl::PointCloud<pcl::PointXYZ>::iterator pt =
-           initial_centers->points.begin();
-       pt < initial_centers->points.end(); ++pt) {
+            initial_centers->points.begin();
+        pt < initial_centers->points.end(); ++pt) {
     int initial_x = int(pt->y * 200) - int(min_pt_x * 200);
     int initial_y = int(pt->z * 200) - int(min_pt_y * 200);
     std::cout << "initial: " << initial_x << ',' << initial_y << std::endl;
@@ -239,8 +275,8 @@ void LidarDetector::STLidarDetection(std::string pcds_dir) {
       new pcl::PointCloud<pcl::PointXYZ>);
   Eigen::MatrixXf R_inv = R.inverse();
   for (pcl::PointCloud<pcl::PointXYZ>::iterator pt =
-           centroid_candidates->points.begin();
-       pt < centroid_candidates->points.end(); ++pt) {
+            centroid_candidates->points.begin();
+        pt < centroid_candidates->points.end(); ++pt) {
     Eigen::MatrixXf tmp(3, 1);
     tmp << pt->x, pt->y, pt->z;
     Eigen::MatrixXf changed = R_inv * tmp;
