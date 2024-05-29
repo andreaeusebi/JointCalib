@@ -14,31 +14,56 @@
 
 using namespace std::chrono_literals;
 
+/**
+ * @brief Simple class used to represent points in X-Y space.
+ */
 class Point2D
 {
     public:
+        /**
+         * @brief Class constructor.
+         */
         Point2D(double x_, double y_) :
             x {x_},
             y {y_}
         {}
 
+        /** X coordinate of the point. */
         double x;
+        /** Y coordinate of the point. */
         double y;
 };
 
+/**
+ * @brief Template class which provides a pointcloud mask representing a calibration target.
+ * 
+ * For now only the calibration target from the original paper is supported.
+ */
 template <typename PointT>
 class CalibrationTargetMask
 {
     public:
-
+        /**
+         * @brief Class constructor, creates the pointcloud mask and setup the visualizater object
+         * in case the user wants to visualize it.
+         */
         CalibrationTargetMask();
 
+        /**
+         * @brief Class destructor.
+         */
         ~CalibrationTargetMask();
 
+        /**
+         * @brief Visualize the created pointcloud mask and provide option to save it into file.
+         */
         void visualizeAndSaveTargetMaskCloud();
 
-        /** Get a read-only reference to the target mask pointer */
-        const typename pcl::PointCloud<PointT>::Ptr & getTargetMask() const
+        /** @brief Get a read-only reference to the target mask pointer.
+         * 
+         * @return Read-only reference to the target mask pointer.
+         */
+        const typename pcl::PointCloud<PointT>::ConstPtr & getTargetMask() const
         {
             return m_target_mask;
         }
@@ -46,14 +71,30 @@ class CalibrationTargetMask
     private:
         /* ### ----- Class Methods ----- ### */
 
+        /**
+         * @brief Checks if a given point is inside any of the defined circles.
+         *
+         * @param point_ The point to be checked, represented as a Point2D object.
+         * @return true if the point is inside at least one circle; false otherwise.
+         */
         bool isPointInsideCircles(const Point2D & point_) const;
 
+        /**
+         * @brief Fill the fields of cloud_point_ object using information from point_ object. 
+         * 
+         * @param point_ Input Point2D object representing a point in XY space.
+         * @param cloud_point_ Output pointcloud point filled with data from input point.
+         */
         void fillPointCloudPoint(const Point2D & point_, PointT & cloud_point_);
 
+        /**
+         * @brief Method handling the update of the visualization interface.
+        */
         void visualizationThread();
 
         /* ### ----- Class Attributes ----- ### */
 
+        /** Pointcloud representing the calibration target mask. */
         typename pcl::PointCloud<PointT>::Ptr m_target_mask;
 
         /** Resolution of the mask in meters. */
@@ -64,6 +105,7 @@ class CalibrationTargetMask
         /** Size of the calibration target along y direction in meters. */
         const double m_y_size {1.200};
         
+        /** Coordinates (in meters) of the holes centers in the calibration target. */
         const std::vector<Point2D> m_circle_centers {
             Point2D(0.3, 0.3),  // top left circle
             Point2D(0.3, 0.9),  // top right circle
@@ -71,12 +113,16 @@ class CalibrationTargetMask
             Point2D(0.9, 0.9)   // bottom right circle
         };
 
+        /** Radius (in meters) of the holes in the calibration target. */
         const double m_circle_radius {0.1};
 
+        /** PCL visualizer object. */
         pcl::visualization::PCLVisualizer::Ptr m_viewer;
 
+        /** Thread handling visualization update. */
         std::thread m_vis_thread;
 
+        /** Atomic flag used to check if visualization updates should be interrupted. */
         std::atomic<bool> m_stop { false };
 };
 
@@ -108,7 +154,6 @@ CalibrationTargetMask<PointT>::CalibrationTargetMask() :
 
             m_target_mask->push_back(cloud_point);
         }
-        
     }
 }
 
