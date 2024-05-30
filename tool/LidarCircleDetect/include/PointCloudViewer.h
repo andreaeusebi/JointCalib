@@ -14,6 +14,11 @@
 /* PCL Includes */
 #include <pcl/visualization/pcl_visualizer.h>
 #include <pcl/io/pcd_io.h>
+#include <pcl/common/transforms.h>
+#include <pcl/registration/gicp.h>
+
+/* Eigen Includes */
+#include <Eigen/Geometry> 
 
 /* Local Includes */
 #include "BaseCloudAligner.h"
@@ -32,6 +37,10 @@ class PointCloudViewer : public BaseCloudAligner
     public slots:
 
         void transformPointCloud() override;
+
+        void hideTarget() override;
+
+        void alignTarget() override;
 
         void terminateProgram() override;
 
@@ -54,6 +63,8 @@ class PointCloudViewer : public BaseCloudAligner
 
         pcl::visualization::PCLVisualizer::Ptr m_viewer;
 
+        Eigen::Affine3f m_transform_LT;
+
         QDoubleSpinBox * m_trans_x_spin_box;
 
         QDoubleSpinBox * m_trans_y_spin_box;
@@ -71,6 +82,8 @@ class PointCloudViewer : public BaseCloudAligner
         // Atomic flag to control the visualization thread
         // It ensures that there are no race conditions when checking or setting this flag from different threads.
         std::atomic<bool> m_running {true};
+
+        bool m_target_shown {true}; 
 };
 
 template<typename PointT>
@@ -82,7 +95,8 @@ PointCloudViewer<PointT>::PointCloudViewer(const std::string & map_pcd_file_,
     m_target_cloud      {new pcl::PointCloud<PointT>},
     m_map_cloud_id      {"map"},
     m_target_cloud_id   {"target"},
-    m_viewer            {new pcl::visualization::PCLVisualizer("PointCloudViewer")}
+    m_viewer            {new pcl::visualization::PCLVisualizer("PointCloudViewer")},
+    m_transform_LT      {Eigen::Affine3f::Identity()}
 {
     /* ----- Load Pointclouds from PCD files -----  */
 
@@ -172,6 +186,123 @@ void PointCloudViewer<PointT>::transformPointCloud()
 
     // Apply the combined transformation to the point cloud
     m_viewer->updatePointCloudPose(m_target_cloud_id, combined_transform);
+
+    std::cout << "combined_transform:" << std::endl
+              << combined_transform.matrix() << std::endl;
+
+    m_transform_LT = combined_transform;
+}
+
+template<typename PointT>
+void PointCloudViewer<PointT>::hideTarget()
+{
+    if (m_target_shown)
+    {
+        m_viewer->removePointCloud(m_target_cloud_id);
+
+        m_target_shown = false;
+    }
+    else
+    {
+        m_viewer->addPointCloud<PointT>(m_target_cloud, m_target_cloud_id);
+        this->transformPointCloud();
+
+        m_target_shown = true;
+    }
+}
+
+template <typename PointT>
+void PointCloudViewer<PointT>::alignTarget()
+{
+    std::cout << "alignTarget()" << std::endl;
+
+    std::cout << "m_transform_LT:" << std::endl
+              << m_transform_LT.matrix() << std::endl;
+    std::cout << "m_transform_LT inverse:" << std::endl
+              << m_transform_LT.inverse().matrix() << std::endl;
+
+    // Create a new pointcloud object identical to target (temporary)
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr temp_cloud (new pcl::PointCloud<pcl::PointXYZRGB>);
+
+    // Copy data
+    pcl::copyPointCloud(*m_target_cloud, *temp_cloud);
+
+    // Change the color to blue to distinguish it from original target
+    for (auto it = temp_cloud->points.begin(); it != temp_cloud->points.end(); ++it)
+    {
+        it->r = 255;
+        it->g = 255;
+        it->b = 0;
+    }
+
+    // Transform temp target using latest transform from user
+    pcl::transformPointCloud(*temp_cloud, *temp_cloud, m_transform_LT);
+
+    // Maybe display as check (display temp cloud)
+    m_viewer->addPointCloud<pcl::PointXYZRGB>(temp_cloud, "temp_cloud");
+
+    m_viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE,
+                                               1,
+                                               "temp_cloud");
+
+    // Convert temp point cloud from pcl::PointXYZRGB to pcl::PointXYZ
+    pcl::PointCloud<pcl::PointXYZ>::Ptr temp_cloud_xyz (new pcl::PointCloud<pcl::PointXYZ>());
+    pcl::copyPointCloud(*temp_cloud, *temp_cloud_xyz);
+
+    // Run g-icp between temp target and map cloud
+    pcl::GeneralizedIterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> g_icp;
+
+    g_icp.setInputSource(temp_cloud_xyz);
+    g_icp.setInputTarget(m_map_cloud);
+
+    // Set parameters for G-ICP
+    g_icp.setMaxCorrespondenceDistance(0.5);   // Maximum distance for correspondence
+    g_icp.setMaximumIterations(800);             // Maximum number of iterations
+    // g_icp.setTransformationEpsilon(1e-8);       // Convergence criteria
+    // g_icp.setEuclideanFitnessEpsilon(1);        // Convergence criteria
+
+    std::cout << "Running ICP..." << std::endl;
+
+    // Perform alignment
+    pcl::PointCloud<pcl::PointXYZ>::Ptr aligned_cloud_xyz (new pcl::PointCloud<pcl::PointXYZ>());
+    g_icp.align(*aligned_cloud_xyz);
+
+    std::cout << "ICP Completed!" << std::endl;
+
+    if (g_icp.hasConverged())
+    {
+        std::cout << "G-ICP has converged." << std::endl;
+        std::cout << "Fitness score: " << g_icp.getFitnessScore() << std::endl;
+        std::cout << "Transformation matrix: " << std::endl << g_icp.getFinalTransformation() << std::endl;
+    }
+    else
+    {
+        std::cout << "G-ICP did not converge." << std::endl;
+    }
+
+    // Convert aligned point cloud from pcl::PointXYZ to pcl::PointXYZRGB
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr aligned_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+    pcl::copyPointCloud(*aligned_cloud_xyz, *aligned_cloud);
+
+    // Change the color to yellow to distinguish it from original target
+    for (auto it = aligned_cloud->points.begin(); it != aligned_cloud->points.end(); ++it)
+    {
+        it->r = 0;
+        it->g = 0;
+        it->b = 255;
+    }
+
+    // Display result (apply updatePointCloudPose to original target cloud or create a new temp copy e apply updatepose to it)
+    m_viewer->addPointCloud<pcl::PointXYZRGB>(aligned_cloud, "aligned_cloud");
+
+    m_viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE,
+                                               1,
+                                               "aligned_cloud");
+
+    // Remove temp cloud from visualization
+    m_viewer->removePointCloud("temp_cloud");
+
+    // Compute overall transform (which is pre transform * g-icp transform)
 }
 
 template <typename PointT>
@@ -308,6 +439,16 @@ void PointCloudViewer<PointT>::initUI()
     layout->addWidget(transform_button);
     connect(transform_button, &QPushButton::clicked, this, &PointCloudViewer::transformPointCloud);
 
+    /* ----- Hide Target button ----- */
+    QPushButton *hide_target_button = new QPushButton("Hide/Show Target");
+    layout->addWidget(hide_target_button);
+    connect(hide_target_button, &QPushButton::clicked, this, &PointCloudViewer::hideTarget);
+
+    /* ----- Align Target button ----- */
+    QPushButton *align_target_button = new QPushButton("Align Target");
+    layout->addWidget(align_target_button);
+    connect(align_target_button, &QPushButton::clicked, this, &PointCloudViewer::alignTarget);
+
     /* ----- Terminate button ----- */
     QPushButton *terminateButton = new QPushButton("Terminate");
     layout->addWidget(terminateButton);
@@ -323,12 +464,8 @@ void PointCloudViewer<PointT>::visualizationThread()
 
     while (m_running)
     {
-        std::cout << "visualizationThread() - while() - BEGIN" << std::endl;
-
         m_viewer->spinOnce(100); // Update viewer
         std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Sleep to reduce CPU usage
-
-        std::cout << "visualizationThread() - while() - END" << std::endl;
     }
 
     std::cout << "visualizationThread() END" << std::endl;

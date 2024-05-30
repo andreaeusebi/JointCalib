@@ -98,7 +98,7 @@ class CalibrationTargetMask
         typename pcl::PointCloud<PointT>::Ptr m_target_mask;
 
         /** Resolution of the mask in meters. */
-        const double m_resolution {0.005};
+        const double m_resolution {0.02};
 
         /** Size of the calibration target along x direction in meters. */
         const double m_x_size {1.200};

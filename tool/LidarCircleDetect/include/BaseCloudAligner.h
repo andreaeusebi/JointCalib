@@ -13,6 +13,8 @@ class BaseCloudAligner : public QWidget
 
     public slots:
         virtual void transformPointCloud() = 0;
+        virtual void hideTarget() = 0;
+        virtual void alignTarget() = 0;
         virtual void terminateProgram() = 0;
 };
 
