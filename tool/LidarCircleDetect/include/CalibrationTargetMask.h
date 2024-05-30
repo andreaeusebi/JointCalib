@@ -98,7 +98,7 @@ class CalibrationTargetMask
         typename pcl::PointCloud<PointT>::Ptr m_target_mask;
 
         /** Resolution of the mask in meters. */
-        const double m_resolution {0.02};
+        const double m_resolution {0.002};
 
         /** Size of the calibration target along x direction in meters. */
         const double m_x_size {1.200};
@@ -114,7 +114,7 @@ class CalibrationTargetMask
         };
 
         /** Radius (in meters) of the holes in the calibration target. */
-        const double m_circle_radius {0.1};
+        const double m_circle_radius {0.11};
 
         /** PCL visualizer object. */
         pcl::visualization::PCLVisualizer::Ptr m_viewer;

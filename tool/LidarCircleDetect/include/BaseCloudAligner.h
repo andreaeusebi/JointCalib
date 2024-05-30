@@ -12,6 +12,7 @@ class BaseCloudAligner : public QWidget
         virtual ~BaseCloudAligner() = default;
 
     public slots:
+        virtual void filterMap() = 0;
         virtual void transformPointCloud() = 0;
         virtual void hideTarget() = 0;
         virtual void alignTarget() = 0;

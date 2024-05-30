@@ -15,7 +15,8 @@
 #include <pcl/visualization/pcl_visualizer.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/common/transforms.h>
-#include <pcl/registration/gicp.h>
+#include <pcl/registration/icp.h>
+#include <pcl/filters/passthrough.h>
 
 /* Eigen Includes */
 #include <Eigen/Geometry> 
@@ -36,6 +37,8 @@ class PointCloudViewer : public BaseCloudAligner
 
     public slots:
 
+        void filterMap() override;
+
         void transformPointCloud() override;
 
         void hideTarget() override;
@@ -51,10 +54,19 @@ class PointCloudViewer : public BaseCloudAligner
 
         void visualizationThread();
 
+        void createHorizontalBoxLayout(QHBoxLayout * & horiz_layout_,
+                                       const std::string & label_,
+                                       QDoubleSpinBox * & spin_box_);
+        
         /* ### ----- Class Attributes ----- ### */
 
+        /** Original map pointcloud, not displayed, keeped as source for filtering. */
         pcl::PointCloud<pcl::PointXYZ>::Ptr m_map_cloud;
 
+        /** Filtered map cloud on the target, displayed on the viewer. */
+        pcl::PointCloud<pcl::PointXYZ>::Ptr m_map_cloud_filtered;
+
+        /** Pointcloud of the calibration target mask. */
         typename pcl::PointCloud<PointT>::Ptr m_target_cloud;
 
         std::string m_map_cloud_id;
@@ -63,8 +75,21 @@ class PointCloudViewer : public BaseCloudAligner
 
         pcl::visualization::PCLVisualizer::Ptr m_viewer;
 
+        /** Transform from Lidar to Target frame. (###### ----- THIS IS LIDAR TO MASK!! ---- #####) */
         Eigen::Affine3f m_transform_LT;
 
+        QDoubleSpinBox * m_filter_x_min_spin_box;
+
+        QDoubleSpinBox * m_filter_x_max_spin_box;
+
+        QDoubleSpinBox * m_filter_y_min_spin_box;
+
+        QDoubleSpinBox * m_filter_y_max_spin_box;
+
+        QDoubleSpinBox * m_filter_z_min_spin_box;
+
+        QDoubleSpinBox * m_filter_z_max_spin_box;
+        
         QDoubleSpinBox * m_trans_x_spin_box;
 
         QDoubleSpinBox * m_trans_y_spin_box;
@@ -91,12 +116,13 @@ PointCloudViewer<PointT>::PointCloudViewer(const std::string & map_pcd_file_,
                                            const std::string & target_pcd_file_,
                                            QWidget *parent_) :
     BaseCloudAligner    (parent_),
-    m_map_cloud         {new pcl::PointCloud<pcl::PointXYZ>},
-    m_target_cloud      {new pcl::PointCloud<PointT>},
-    m_map_cloud_id      {"map"},
-    m_target_cloud_id   {"target"},
-    m_viewer            {new pcl::visualization::PCLVisualizer("PointCloudViewer")},
-    m_transform_LT      {Eigen::Affine3f::Identity()}
+    m_map_cloud             {new pcl::PointCloud<pcl::PointXYZ>},
+    m_map_cloud_filtered    {new pcl::PointCloud<pcl::PointXYZ>},
+    m_target_cloud          {new pcl::PointCloud<PointT>},
+    m_map_cloud_id          {"map"},
+    m_target_cloud_id       {"target"},
+    m_viewer                {new pcl::visualization::PCLVisualizer("PointCloudViewer")},
+    m_transform_LT          {Eigen::Affine3f::Identity()}
 {
     /* ----- Load Pointclouds from PCD files -----  */
 
@@ -106,6 +132,9 @@ PointCloudViewer<PointT>::PointCloudViewer(const std::string & map_pcd_file_,
         return;
     }
 
+    // Copy the original map to the filtered one (at the beginning they are identical)
+    pcl::copyPointCloud(*m_map_cloud, *m_map_cloud_filtered);
+
     if (pcl::io::loadPCDFile(target_pcd_file_, *m_target_cloud) == -1)
     {
         PCL_ERROR("Couldn't read file %s \n", target_pcd_file_.c_str());
@@ -114,7 +143,7 @@ PointCloudViewer<PointT>::PointCloudViewer(const std::string & map_pcd_file_,
 
     /* ----- Load Visualizer with Map and Target Clouds -----  */
 
-    m_viewer->addPointCloud<pcl::PointXYZ>(m_map_cloud, m_map_cloud_id);
+    m_viewer->addPointCloud<pcl::PointXYZ>(m_map_cloud_filtered, m_map_cloud_id);
     m_viewer->addPointCloud<PointT>(m_target_cloud, m_target_cloud_id);
 
     m_viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE,
@@ -151,6 +180,38 @@ PointCloudViewer<PointT>::~PointCloudViewer()
     }
 
     std::cout << "~PointCloudViewer() END" << std::endl;
+}
+
+template<typename PointT>
+void PointCloudViewer<PointT>::filterMap()
+{
+    std::cout << "[filterMap()]: BEGIN" << std::endl;
+
+    pcl::PassThrough<pcl::PointXYZ> filter_x;
+    filter_x.setInputCloud(m_map_cloud);
+    filter_x.setFilterFieldName("x");
+    filter_x.setFilterLimits(m_filter_x_min_spin_box->value(),
+                             m_filter_x_max_spin_box->value());
+                             
+    filter_x.filter(*m_map_cloud_filtered);
+
+    pcl::PassThrough<pcl::PointXYZ> filter_y;
+    filter_y.setInputCloud(m_map_cloud_filtered);
+    filter_y.setFilterFieldName("y");
+    filter_y.setFilterLimits(m_filter_y_min_spin_box->value(),
+                             m_filter_y_max_spin_box->value());
+                             
+    filter_y.filter(*m_map_cloud_filtered);
+
+    pcl::PassThrough<pcl::PointXYZ> filter_z;
+    filter_z.setInputCloud(m_map_cloud_filtered);
+    filter_z.setFilterFieldName("z");
+    filter_z.setFilterLimits(m_filter_z_min_spin_box->value(),
+                             m_filter_z_max_spin_box->value());
+                             
+    filter_z.filter(*m_map_cloud_filtered);
+
+    m_viewer->updatePointCloud(m_map_cloud_filtered, m_map_cloud_id);
 }
 
 template<typename PointT>
@@ -221,88 +282,89 @@ void PointCloudViewer<PointT>::alignTarget()
     std::cout << "m_transform_LT inverse:" << std::endl
               << m_transform_LT.inverse().matrix() << std::endl;
 
-    // Create a new pointcloud object identical to target (temporary)
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr temp_cloud (new pcl::PointCloud<pcl::PointXYZRGB>);
+    // Create a new temporary pointcloud object identical to the mask
+    pcl::PointCloud<pcl::PointXYZRGB>::Ptr temp_mask_cloud (new pcl::PointCloud<pcl::PointXYZRGB>);
 
-    // Copy data
-    pcl::copyPointCloud(*m_target_cloud, *temp_cloud);
+    // Copy the data from the original to the copy
+    pcl::copyPointCloud(*m_target_cloud, *temp_mask_cloud);
 
     // Change the color to blue to distinguish it from original target
-    for (auto it = temp_cloud->points.begin(); it != temp_cloud->points.end(); ++it)
-    {
-        it->r = 255;
-        it->g = 255;
-        it->b = 0;
-    }
-
-    // Transform temp target using latest transform from user
-    pcl::transformPointCloud(*temp_cloud, *temp_cloud, m_transform_LT);
-
-    // Maybe display as check (display temp cloud)
-    m_viewer->addPointCloud<pcl::PointXYZRGB>(temp_cloud, "temp_cloud");
-
-    m_viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE,
-                                               1,
-                                               "temp_cloud");
-
-    // Convert temp point cloud from pcl::PointXYZRGB to pcl::PointXYZ
-    pcl::PointCloud<pcl::PointXYZ>::Ptr temp_cloud_xyz (new pcl::PointCloud<pcl::PointXYZ>());
-    pcl::copyPointCloud(*temp_cloud, *temp_cloud_xyz);
-
-    // Run g-icp between temp target and map cloud
-    pcl::GeneralizedIterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> g_icp;
-
-    g_icp.setInputSource(temp_cloud_xyz);
-    g_icp.setInputTarget(m_map_cloud);
-
-    // Set parameters for G-ICP
-    g_icp.setMaxCorrespondenceDistance(0.5);   // Maximum distance for correspondence
-    g_icp.setMaximumIterations(800);             // Maximum number of iterations
-    // g_icp.setTransformationEpsilon(1e-8);       // Convergence criteria
-    // g_icp.setEuclideanFitnessEpsilon(1);        // Convergence criteria
-
-    std::cout << "Running ICP..." << std::endl;
-
-    // Perform alignment
-    pcl::PointCloud<pcl::PointXYZ>::Ptr aligned_cloud_xyz (new pcl::PointCloud<pcl::PointXYZ>());
-    g_icp.align(*aligned_cloud_xyz);
-
-    std::cout << "ICP Completed!" << std::endl;
-
-    if (g_icp.hasConverged())
-    {
-        std::cout << "G-ICP has converged." << std::endl;
-        std::cout << "Fitness score: " << g_icp.getFitnessScore() << std::endl;
-        std::cout << "Transformation matrix: " << std::endl << g_icp.getFinalTransformation() << std::endl;
-    }
-    else
-    {
-        std::cout << "G-ICP did not converge." << std::endl;
-    }
-
-    // Convert aligned point cloud from pcl::PointXYZ to pcl::PointXYZRGB
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr aligned_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
-    pcl::copyPointCloud(*aligned_cloud_xyz, *aligned_cloud);
-
-    // Change the color to yellow to distinguish it from original target
-    for (auto it = aligned_cloud->points.begin(); it != aligned_cloud->points.end(); ++it)
+    for (auto it = temp_mask_cloud->points.begin(); it != temp_mask_cloud->points.end(); ++it)
     {
         it->r = 0;
         it->g = 0;
         it->b = 255;
     }
 
-    // Display result (apply updatePointCloudPose to original target cloud or create a new temp copy e apply updatepose to it)
-    m_viewer->addPointCloud<pcl::PointXYZRGB>(aligned_cloud, "aligned_cloud");
+    // Transform temp mask using latest transform from user
+    pcl::transformPointCloud(*temp_mask_cloud, *temp_mask_cloud, m_transform_LT);
+
+    // Display as check
+    m_viewer->addPointCloud<pcl::PointXYZRGB>(temp_mask_cloud, "temp_mask_cloud");
 
     m_viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE,
                                                1,
-                                               "aligned_cloud");
+                                               "temp_mask_cloud");
 
-    // Remove temp cloud from visualization
-    m_viewer->removePointCloud("temp_cloud");
+    // Convert temp point cloud from pcl::PointXYZRGB to pcl::PointXYZ
+    pcl::PointCloud<pcl::PointXYZ>::Ptr temp_mask_cloud_xyz (new pcl::PointCloud<pcl::PointXYZ>());
+    pcl::copyPointCloud(*temp_mask_cloud, *temp_mask_cloud_xyz);
 
-    // Compute overall transform (which is pre transform * g-icp transform)
+    // Run ICP between temp mask and filtered map cloud
+    pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
+
+    icp.setInputSource(m_map_cloud_filtered);
+    icp.setInputTarget(temp_mask_cloud_xyz);
+
+    // Set parameters for G-ICP
+    icp.setMaxCorrespondenceDistance(0.5);      // Maximum distance for correspondence
+    icp.setMaximumIterations(2000);             // Maximum number of iterations
+    // icp.setTransformationEpsilon(1e-8);         // Convergence criteria
+    // icp.setEuclideanFitnessEpsilon(1);          // Convergence criteria
+
+    std::cout << "Running ICP..." << std::endl;
+
+    // Perform alignment
+    pcl::PointCloud<pcl::PointXYZ>::Ptr aligned_cloud_xyz (new pcl::PointCloud<pcl::PointXYZ>());
+    icp.align(*aligned_cloud_xyz);
+
+    std::cout << "ICP Completed!" << std::endl;
+
+    if (icp.hasConverged())
+    {
+        std::cout << "ICP has converged." << std::endl;
+        std::cout << "Fitness score: " << icp.getFitnessScore() << std::endl;
+        
+        Eigen::Affine3f transform_target_mask;
+        transform_target_mask.matrix() = icp.getFinalTransformation();
+
+        std::cout << "Transformation matrix: " << std::endl
+                  << transform_target_mask.matrix() << std::endl;
+
+        // Get convergence criteria
+        auto criteria = icp.getConvergeCriteria();
+
+        std::cout << "Convergence reason: " << criteria->getConvergenceState() << std::endl;
+
+        // Apply the inverse of the just computed transform to move the mask into target position
+        pcl::transformPointCloud(*temp_mask_cloud,
+                                 *temp_mask_cloud,
+                                 transform_target_mask.matrix().inverse());
+
+        // Update visualization
+        m_viewer->updatePointCloud(temp_mask_cloud, "temp_mask_cloud");
+
+        // Compute circle centers wrt new mask pose
+
+        // Compute overall transform from Lidar to (estimated) Target
+        // cc_T = T_TL * cc_L
+        // T_TL = T_TM * T_ML (to understand better)
+
+    }
+    else
+    {
+        std::cout << "G-ICP did not converge." << std::endl;
+    }
 }
 
 template <typename PointT>
@@ -323,6 +385,77 @@ void PointCloudViewer<PointT>::initUI()
 
     QVBoxLayout *layout = new QVBoxLayout;
     setLayout(layout);
+
+    /* ----- X Axis PassThrough Filter Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
+
+    QHBoxLayout * filter_x_min_hbox_layout  = new QHBoxLayout;
+    std::string filter_x_min_label          = "Map X Min:";
+
+    this->createHorizontalBoxLayout(filter_x_min_hbox_layout,
+                                    filter_x_min_label,
+                                    m_filter_x_min_spin_box);
+
+    // Add the QHBoxLayout to the existing QVBoxLayout
+    layout->addLayout(filter_x_min_hbox_layout);
+
+    QHBoxLayout * filter_x_max_hbox_layout  = new QHBoxLayout;
+    std::string filter_x_max_label          = "Map X Max:";
+
+    this->createHorizontalBoxLayout(filter_x_max_hbox_layout,
+                                    filter_x_max_label,
+                                    m_filter_x_max_spin_box);
+
+    // Add the QHBoxLayout to the existing QVBoxLayout
+    layout->addLayout(filter_x_max_hbox_layout);
+
+    /* ----- Y Axis PassThrough Filter Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
+
+    QHBoxLayout * filter_y_min_hbox_layout  = new QHBoxLayout;
+    std::string filter_y_min_label          = "Map Y Min:";
+
+    this->createHorizontalBoxLayout(filter_y_min_hbox_layout,
+                                    filter_y_min_label,
+                                    m_filter_y_min_spin_box);
+
+    // Add the QHBoxLayout to the existing QVBoxLayout
+    layout->addLayout(filter_y_min_hbox_layout);
+
+    QHBoxLayout * filter_y_max_hbox_layout  = new QHBoxLayout;
+    std::string filter_y_max_label          = "Map Y Max:";
+
+    this->createHorizontalBoxLayout(filter_y_max_hbox_layout,
+                                    filter_y_max_label,
+                                    m_filter_y_max_spin_box);
+
+    // Add the QHBoxLayout to the existing QVBoxLayout
+    layout->addLayout(filter_y_max_hbox_layout);
+
+    /* ----- Z Axis PassThrough Filter Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
+
+    QHBoxLayout * filter_z_min_hbox_layout  = new QHBoxLayout;
+    std::string filter_z_min_label          = "Map Z Min:";
+
+    this->createHorizontalBoxLayout(filter_z_min_hbox_layout,
+                                    filter_z_min_label,
+                                    m_filter_z_min_spin_box);
+
+    // Add the QHBoxLayout to the existing QVBoxLayout
+    layout->addLayout(filter_z_min_hbox_layout);
+
+    QHBoxLayout * filter_z_max_hbox_layout  = new QHBoxLayout;
+    std::string filter_z_max_label          = "Map Z Max:";
+
+    this->createHorizontalBoxLayout(filter_z_max_hbox_layout,
+                                    filter_z_max_label,
+                                    m_filter_z_max_spin_box);
+
+    // Add the QHBoxLayout to the existing QVBoxLayout
+    layout->addLayout(filter_z_max_hbox_layout);
+
+    /* ----- Map Cloud Filter button ----- */
+    QPushButton *map_filter_button = new QPushButton("Filter Map");
+    layout->addWidget(map_filter_button);
+    connect(map_filter_button, &QPushButton::clicked, this, &PointCloudViewer::filterMap);
 
     /* ----- X Axis Translation Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
     QHBoxLayout * trans_x_hbox_layout = new QHBoxLayout;
@@ -469,6 +602,28 @@ void PointCloudViewer<PointT>::visualizationThread()
     }
 
     std::cout << "visualizationThread() END" << std::endl;
+}
+
+template <typename PointT>
+void PointCloudViewer<PointT>::createHorizontalBoxLayout(QHBoxLayout * & horiz_layout_,
+                                                         const std::string & label_,
+                                                         QDoubleSpinBox * & spin_box_)
+{
+    // Create a QLabel to act as the label for the spin box
+    QLabel * q_label = new QLabel(label_.c_str());
+
+    // Create Spin Box
+    spin_box_ = new QDoubleSpinBox;
+    spin_box_->setRange(-100.0, 100.0);
+    spin_box_->setSingleStep(1.0);
+    spin_box_->setValue(0.0);
+
+    // Instantiate Horizontal Layout
+    horiz_layout_ = new QHBoxLayout;
+
+    // Add the label and the spin box to the layout
+    horiz_layout_->addWidget(q_label);
+    horiz_layout_->addWidget(spin_box_);
 }
 
 #endif // POINT_CLOUD_VIEWER_H
