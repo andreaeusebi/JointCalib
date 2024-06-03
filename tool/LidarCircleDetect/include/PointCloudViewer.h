@@ -30,7 +30,7 @@ class PointCloudViewer : public BaseCloudAligner
 {
     public:
         PointCloudViewer(const std::string & map_pcd_file_,
-                         const std::string & target_pcd_file_,
+                         const std::string & mask_pcd_file_,
                          QWidget *parent_ = nullptr);
 
         ~PointCloudViewer();
@@ -41,9 +41,9 @@ class PointCloudViewer : public BaseCloudAligner
 
         void transformPointCloud() override;
 
-        void hideTarget() override;
+        void hideMask() override;
 
-        void alignTarget() override;
+        void alignMask() override;
 
         void terminateProgram() override;
 
@@ -54,9 +54,10 @@ class PointCloudViewer : public BaseCloudAligner
 
         void visualizationThread();
 
-        void createHorizontalBoxLayout(QHBoxLayout * & horiz_layout_,
-                                       const std::string & label_,
-                                       QDoubleSpinBox * & spin_box_);
+        void appendHorizBoxLayoutToVertLayout(const std::string & horiz_layout_label_,
+                                              const double & spin_box_initial_value_,
+                                              QDoubleSpinBox * & spin_box_,
+                                              QVBoxLayout * const & vert_layout_);
         
         /* ### ----- Class Attributes ----- ### */
 
@@ -67,16 +68,24 @@ class PointCloudViewer : public BaseCloudAligner
         pcl::PointCloud<pcl::PointXYZ>::Ptr m_map_cloud_filtered;
 
         /** Pointcloud of the calibration target mask. */
-        typename pcl::PointCloud<PointT>::Ptr m_target_cloud;
+        typename pcl::PointCloud<PointT>::Ptr m_mask_cloud;
 
         std::string m_map_cloud_id;
 
-        std::string m_target_cloud_id;
+        std::string m_mask_cloud_id;
 
         pcl::visualization::PCLVisualizer::Ptr m_viewer;
 
         /** Transform from Lidar to Target frame. (###### ----- THIS IS LIDAR TO MASK!! ---- #####) */
         Eigen::Affine3f m_transform_LT;
+
+        std::thread m_vis_thread;
+
+        // Atomic flag to control the visualization thread
+        // It ensures that there are no race conditions when checking or setting this flag from different threads.
+        std::atomic<bool> m_running {true};
+
+        bool m_mask_shown {true}; 
 
         QDoubleSpinBox * m_filter_x_min_spin_box;
 
@@ -101,26 +110,18 @@ class PointCloudViewer : public BaseCloudAligner
         QDoubleSpinBox * m_rot_y_spin_box;
 
         QDoubleSpinBox * m_rot_z_spin_box;
-
-        std::thread m_vis_thread;
-
-        // Atomic flag to control the visualization thread
-        // It ensures that there are no race conditions when checking or setting this flag from different threads.
-        std::atomic<bool> m_running {true};
-
-        bool m_target_shown {true}; 
 };
 
 template<typename PointT>
 PointCloudViewer<PointT>::PointCloudViewer(const std::string & map_pcd_file_,
-                                           const std::string & target_pcd_file_,
+                                           const std::string & mask_pcd_file_,
                                            QWidget *parent_) :
     BaseCloudAligner    (parent_),
     m_map_cloud             {new pcl::PointCloud<pcl::PointXYZ>},
     m_map_cloud_filtered    {new pcl::PointCloud<pcl::PointXYZ>},
-    m_target_cloud          {new pcl::PointCloud<PointT>},
+    m_mask_cloud            {new pcl::PointCloud<PointT>},
     m_map_cloud_id          {"map"},
-    m_target_cloud_id       {"target"},
+    m_mask_cloud_id         {"mask"},
     m_viewer                {new pcl::visualization::PCLVisualizer("PointCloudViewer")},
     m_transform_LT          {Eigen::Affine3f::Identity()}
 {
@@ -135,16 +136,16 @@ PointCloudViewer<PointT>::PointCloudViewer(const std::string & map_pcd_file_,
     // Copy the original map to the filtered one (at the beginning they are identical)
     pcl::copyPointCloud(*m_map_cloud, *m_map_cloud_filtered);
 
-    if (pcl::io::loadPCDFile(target_pcd_file_, *m_target_cloud) == -1)
+    if (pcl::io::loadPCDFile(mask_pcd_file_, *m_mask_cloud) == -1)
     {
-        PCL_ERROR("Couldn't read file %s \n", target_pcd_file_.c_str());
+        PCL_ERROR("Couldn't read file %s \n", mask_pcd_file_.c_str());
         return;
     }
 
-    /* ----- Load Visualizer with Map and Target Clouds -----  */
+    /* ----- Load Visualizer with Map and Mask Clouds -----  */
 
     m_viewer->addPointCloud<pcl::PointXYZ>(m_map_cloud_filtered, m_map_cloud_id);
-    m_viewer->addPointCloud<PointT>(m_target_cloud, m_target_cloud_id);
+    m_viewer->addPointCloud<PointT>(m_mask_cloud, m_mask_cloud_id);
 
     m_viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE,
                                                1,
@@ -152,7 +153,7 @@ PointCloudViewer<PointT>::PointCloudViewer(const std::string & map_pcd_file_,
 
     m_viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE,
                                                1,
-                                               m_target_cloud_id);
+                                               m_mask_cloud_id);
 
     m_viewer->setBackgroundColor(0, 0, 0);
     m_viewer->addCoordinateSystem(1.0);
@@ -246,7 +247,7 @@ void PointCloudViewer<PointT>::transformPointCloud()
     combined_transform.translation() << tx, ty, tz;
 
     // Apply the combined transformation to the point cloud
-    m_viewer->updatePointCloudPose(m_target_cloud_id, combined_transform);
+    m_viewer->updatePointCloudPose(m_mask_cloud_id, combined_transform);
 
     std::cout << "combined_transform:" << std::endl
               << combined_transform.matrix() << std::endl;
@@ -255,27 +256,27 @@ void PointCloudViewer<PointT>::transformPointCloud()
 }
 
 template<typename PointT>
-void PointCloudViewer<PointT>::hideTarget()
+void PointCloudViewer<PointT>::hideMask()
 {
-    if (m_target_shown)
+    if (m_mask_shown)
     {
-        m_viewer->removePointCloud(m_target_cloud_id);
+        m_viewer->removePointCloud(m_mask_cloud_id);
 
-        m_target_shown = false;
+        m_mask_shown = false;
     }
     else
     {
-        m_viewer->addPointCloud<PointT>(m_target_cloud, m_target_cloud_id);
+        m_viewer->addPointCloud<PointT>(m_mask_cloud, m_mask_cloud_id);
         this->transformPointCloud();
 
-        m_target_shown = true;
+        m_mask_shown = true;
     }
 }
 
 template <typename PointT>
-void PointCloudViewer<PointT>::alignTarget()
+void PointCloudViewer<PointT>::alignMask()
 {
-    std::cout << "alignTarget()" << std::endl;
+    std::cout << "alignMask()" << std::endl;
 
     std::cout << "m_transform_LT:" << std::endl
               << m_transform_LT.matrix() << std::endl;
@@ -286,9 +287,9 @@ void PointCloudViewer<PointT>::alignTarget()
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr temp_mask_cloud (new pcl::PointCloud<pcl::PointXYZRGB>);
 
     // Copy the data from the original to the copy
-    pcl::copyPointCloud(*m_target_cloud, *temp_mask_cloud);
+    pcl::copyPointCloud(*m_mask_cloud, *temp_mask_cloud);
 
-    // Change the color to blue to distinguish it from original target
+    // Change the color to blue to distinguish it from original mask
     for (auto it = temp_mask_cloud->points.begin(); it != temp_mask_cloud->points.end(); ++it)
     {
         it->r = 0;
@@ -379,7 +380,7 @@ void PointCloudViewer<PointT>::terminateProgram()
 template <typename PointT>
 void PointCloudViewer<PointT>::initUI()
 {
-    std::cout << "init() BEGIN" << std::endl;
+    std::cout << "initUI() BEGIN" << std::endl;
 
     /* ----- Set up QT stuff ----- */
 
@@ -388,206 +389,113 @@ void PointCloudViewer<PointT>::initUI()
 
     /* ----- X Axis PassThrough Filter Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
-    QHBoxLayout * filter_x_min_hbox_layout  = new QHBoxLayout;
-    std::string filter_x_min_label          = "Map X Min:";
+    this->appendHorizBoxLayoutToVertLayout("Map X Min:",
+                                           -100.0,
+                                           m_filter_x_min_spin_box,
+                                           layout);
 
-    this->createHorizontalBoxLayout(filter_x_min_hbox_layout,
-                                    filter_x_min_label,
-                                    m_filter_x_min_spin_box);
-
-    // Add the QHBoxLayout to the existing QVBoxLayout
-    layout->addLayout(filter_x_min_hbox_layout);
-
-    QHBoxLayout * filter_x_max_hbox_layout  = new QHBoxLayout;
-    std::string filter_x_max_label          = "Map X Max:";
-
-    this->createHorizontalBoxLayout(filter_x_max_hbox_layout,
-                                    filter_x_max_label,
-                                    m_filter_x_max_spin_box);
-
-    // Add the QHBoxLayout to the existing QVBoxLayout
-    layout->addLayout(filter_x_max_hbox_layout);
+    this->appendHorizBoxLayoutToVertLayout("Map X Max:",
+                                           100.0,
+                                           m_filter_x_max_spin_box,
+                                           layout);
 
     /* ----- Y Axis PassThrough Filter Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
-    QHBoxLayout * filter_y_min_hbox_layout  = new QHBoxLayout;
-    std::string filter_y_min_label          = "Map Y Min:";
+    this->appendHorizBoxLayoutToVertLayout("Map Y Min:",
+                                           -100.0,
+                                           m_filter_y_min_spin_box,
+                                           layout);
 
-    this->createHorizontalBoxLayout(filter_y_min_hbox_layout,
-                                    filter_y_min_label,
-                                    m_filter_y_min_spin_box);
-
-    // Add the QHBoxLayout to the existing QVBoxLayout
-    layout->addLayout(filter_y_min_hbox_layout);
-
-    QHBoxLayout * filter_y_max_hbox_layout  = new QHBoxLayout;
-    std::string filter_y_max_label          = "Map Y Max:";
-
-    this->createHorizontalBoxLayout(filter_y_max_hbox_layout,
-                                    filter_y_max_label,
-                                    m_filter_y_max_spin_box);
-
-    // Add the QHBoxLayout to the existing QVBoxLayout
-    layout->addLayout(filter_y_max_hbox_layout);
+    this->appendHorizBoxLayoutToVertLayout("Map Y Max:",
+                                           100.0,
+                                           m_filter_y_max_spin_box,
+                                           layout);
 
     /* ----- Z Axis PassThrough Filter Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
-    QHBoxLayout * filter_z_min_hbox_layout  = new QHBoxLayout;
-    std::string filter_z_min_label          = "Map Z Min:";
+    this->appendHorizBoxLayoutToVertLayout("Map Z Min:",
+                                           -100.0,
+                                           m_filter_z_min_spin_box,
+                                           layout);
 
-    this->createHorizontalBoxLayout(filter_z_min_hbox_layout,
-                                    filter_z_min_label,
-                                    m_filter_z_min_spin_box);
-
-    // Add the QHBoxLayout to the existing QVBoxLayout
-    layout->addLayout(filter_z_min_hbox_layout);
-
-    QHBoxLayout * filter_z_max_hbox_layout  = new QHBoxLayout;
-    std::string filter_z_max_label          = "Map Z Max:";
-
-    this->createHorizontalBoxLayout(filter_z_max_hbox_layout,
-                                    filter_z_max_label,
-                                    m_filter_z_max_spin_box);
-
-    // Add the QHBoxLayout to the existing QVBoxLayout
-    layout->addLayout(filter_z_max_hbox_layout);
+    this->appendHorizBoxLayoutToVertLayout("Map Z Max:",
+                                           100.0,
+                                           m_filter_z_max_spin_box,
+                                           layout);
 
     /* ----- Map Cloud Filter button ----- */
+
     QPushButton *map_filter_button = new QPushButton("Filter Map");
     layout->addWidget(map_filter_button);
     connect(map_filter_button, &QPushButton::clicked, this, &PointCloudViewer::filterMap);
 
     /* ----- X Axis Translation Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
-    QHBoxLayout * trans_x_hbox_layout = new QHBoxLayout;
 
-    m_trans_x_spin_box = new QDoubleSpinBox;
-    m_trans_x_spin_box->setRange(-100.0, 100.0);
-    m_trans_x_spin_box->setSingleStep(1.0);
-    m_trans_x_spin_box->setValue(0.0);
-
-    // Create a QLabel to act as the label for the spin box
-    QLabel * trans_x_label = new QLabel("Trans X:");
-
-    // Add the label and the spin box to the layout
-    trans_x_hbox_layout->addWidget(trans_x_label);
-    trans_x_hbox_layout->addWidget(m_trans_x_spin_box);
-
-    // Add the QHBoxLayout to the existing QVBoxLayout
-    layout->addLayout(trans_x_hbox_layout);
+    this->appendHorizBoxLayoutToVertLayout("Trans X:",
+                                           0.0,
+                                           m_trans_x_spin_box,
+                                           layout);
 
     /* ----- Y Axis Translation Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
-    QHBoxLayout * trans_y_hbox_layout = new QHBoxLayout;
 
-    m_trans_y_spin_box = new QDoubleSpinBox;
-    m_trans_y_spin_box->setRange(-100.0, 100.0);
-    m_trans_y_spin_box->setSingleStep(1.0);
-    m_trans_y_spin_box->setValue(0.0);
-
-    // Create a QLabel to act as the label for the spin box
-    QLabel * trans_y_label = new QLabel("Trans Y:");
-
-    // Add the label and the spin box to the layout
-    trans_y_hbox_layout->addWidget(trans_y_label);
-    trans_y_hbox_layout->addWidget(m_trans_y_spin_box);
-
-    // Add the QHBoxLayout to the existing QVBoxLayout
-    layout->addLayout(trans_y_hbox_layout);
+    this->appendHorizBoxLayoutToVertLayout("Trans Y:",
+                                           0.0,
+                                           m_trans_y_spin_box,
+                                           layout);
 
     /* ----- Z Axis Translation Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
-    QHBoxLayout * trans_z_hbox_layout = new QHBoxLayout;
 
-    m_trans_z_spin_box = new QDoubleSpinBox;
-    m_trans_z_spin_box->setRange(-100.0, 100.0);
-    m_trans_z_spin_box->setSingleStep(1.0);
-    m_trans_z_spin_box->setValue(0.0);
-
-    // Create a QLabel to act as the label for the spin box
-    QLabel * trans_z_label = new QLabel("Trans Z:");
-
-    // Add the label and the spin box to the layout
-    trans_z_hbox_layout->addWidget(trans_z_label);
-    trans_z_hbox_layout->addWidget(m_trans_z_spin_box);
-
-    // Add the QHBoxLayout to the existing QVBoxLayout
-    layout->addLayout(trans_z_hbox_layout);
+    this->appendHorizBoxLayoutToVertLayout("Trans Z:",
+                                           0.0,
+                                           m_trans_z_spin_box,
+                                           layout);
 
     /* ----- X Axis Rotation Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
-    QHBoxLayout * rot_x_hbox_layout = new QHBoxLayout;
 
-    m_rot_x_spin_box = new QDoubleSpinBox;
-    m_rot_x_spin_box->setRange(-360.0, 360.0);
-    m_rot_x_spin_box->setSingleStep(1.0);
-    m_rot_x_spin_box->setValue(0.0);
-
-    // Create a QLabel to act as the label for the spin box
-    QLabel * rot_x_label = new QLabel("Rot X:");
-
-    // Add the label and the spin box to the layout
-    rot_x_hbox_layout->addWidget(rot_x_label);
-    rot_x_hbox_layout->addWidget(m_rot_x_spin_box);
-
-    // Add the QHBoxLayout to the existing QVBoxLayout
-    layout->addLayout(rot_x_hbox_layout);
+    this->appendHorizBoxLayoutToVertLayout("Rot X:",
+                                           0.0,
+                                           m_rot_x_spin_box,
+                                           layout);
 
     /* ----- Y Axis Rotation Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
-    QHBoxLayout * rot_y_hbox_layout = new QHBoxLayout;
-
-    m_rot_y_spin_box = new QDoubleSpinBox;
-    m_rot_y_spin_box->setRange(-360.0, 360.0);
-    m_rot_y_spin_box->setSingleStep(1.0);
-    m_rot_y_spin_box->setValue(0.0);
-
-    // Create a QLabel to act as the label for the spin box
-    QLabel * rot_y_label = new QLabel("Rot Y:");
-
-    // Add the label and the spin box to the layout
-    rot_y_hbox_layout->addWidget(rot_y_label);
-    rot_y_hbox_layout->addWidget(m_rot_y_spin_box);
-
-    // Add the QHBoxLayout to the existing QVBoxLayout
-    layout->addLayout(rot_y_hbox_layout);
+    this->appendHorizBoxLayoutToVertLayout("Rot Y:",
+                                           0.0,
+                                           m_rot_y_spin_box,
+                                           layout);
 
     /* ----- Z Axis Rotation Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
-    QHBoxLayout * rot_z_hbox_layout = new QHBoxLayout;
-
-    m_rot_z_spin_box = new QDoubleSpinBox;
-    m_rot_z_spin_box->setRange(-360.0, 360.0);
-    m_rot_z_spin_box->setSingleStep(1.0);
-    m_rot_z_spin_box->setValue(0.0);
-
-    // Create a QLabel to act as the label for the spin box
-    QLabel * rot_z_label = new QLabel("Rot Z:");
-
-    // Add the label and the spin box to the layout
-    rot_z_hbox_layout->addWidget(rot_z_label);
-    rot_z_hbox_layout->addWidget(m_rot_z_spin_box);
-
-    // Add the QHBoxLayout to the existing QVBoxLayout
-    layout->addLayout(rot_z_hbox_layout);
+    this->appendHorizBoxLayoutToVertLayout("Rot Z:",
+                                           0.0,
+                                           m_rot_z_spin_box,
+                                           layout);
 
     /* ----- Transform button ----- */
+
     QPushButton *transform_button = new QPushButton("Transform");
     layout->addWidget(transform_button);
     connect(transform_button, &QPushButton::clicked, this, &PointCloudViewer::transformPointCloud);
 
-    /* ----- Hide Target button ----- */
-    QPushButton *hide_target_button = new QPushButton("Hide/Show Target");
-    layout->addWidget(hide_target_button);
-    connect(hide_target_button, &QPushButton::clicked, this, &PointCloudViewer::hideTarget);
+    /* ----- Hide Mask button ----- */
 
-    /* ----- Align Target button ----- */
-    QPushButton *align_target_button = new QPushButton("Align Target");
-    layout->addWidget(align_target_button);
-    connect(align_target_button, &QPushButton::clicked, this, &PointCloudViewer::alignTarget);
+    QPushButton *hide_mask_button = new QPushButton("Hide/Show Mask");
+    layout->addWidget(hide_mask_button);
+    connect(hide_mask_button, &QPushButton::clicked, this, &PointCloudViewer::hideMask);
+
+    /* ----- Align Mask button ----- */
+
+    QPushButton *align_mask_button = new QPushButton("Align Mask");
+    layout->addWidget(align_mask_button);
+    connect(align_mask_button, &QPushButton::clicked, this, &PointCloudViewer::alignMask);
 
     /* ----- Terminate button ----- */
+
     QPushButton *terminateButton = new QPushButton("Terminate");
     layout->addWidget(terminateButton);
     connect(terminateButton, &QPushButton::clicked, this, &PointCloudViewer::terminateProgram);
 
-    std::cout << "init() END" << std::endl;
+    std::cout << "initUI() END" << std::endl;
 }
 
 template <typename PointT>
@@ -605,25 +513,35 @@ void PointCloudViewer<PointT>::visualizationThread()
 }
 
 template <typename PointT>
-void PointCloudViewer<PointT>::createHorizontalBoxLayout(QHBoxLayout * & horiz_layout_,
-                                                         const std::string & label_,
-                                                         QDoubleSpinBox * & spin_box_)
+void PointCloudViewer<PointT>::appendHorizBoxLayoutToVertLayout(
+    const std::string & horiz_layout_label_,
+    const double & spin_box_initial_value_,
+    QDoubleSpinBox * & spin_box_,
+    QVBoxLayout * const & vert_layout_
+)
 {
     // Create a QLabel to act as the label for the spin box
-    QLabel * q_label = new QLabel(label_.c_str());
+    QLabel * q_label = new QLabel(horiz_layout_label_.c_str());
 
     // Create Spin Box
     spin_box_ = new QDoubleSpinBox;
     spin_box_->setRange(-100.0, 100.0);
     spin_box_->setSingleStep(1.0);
-    spin_box_->setValue(0.0);
+    spin_box_->setValue(spin_box_initial_value_);
 
-    // Instantiate Horizontal Layout
-    horiz_layout_ = new QHBoxLayout;
+    // Create the horizontal box layout object
+    QHBoxLayout * hbox_layout = new QHBoxLayout;
 
     // Add the label and the spin box to the layout
-    horiz_layout_->addWidget(q_label);
-    horiz_layout_->addWidget(spin_box_);
+    hbox_layout->addWidget(q_label);
+    hbox_layout->addWidget(spin_box_);
+
+    /* Add the QHBoxLayout to the existing QVBoxLayout
+       Don't worry about pointed memory region handling: in Qt the parent takes ownership
+       of the added layout. Specifically, vert_layout_ will be responsible for deleting
+       hbox_layout when vert_layout_ itself is deleted, ensuring that there are no memory leaks.
+    */
+    vert_layout_->addLayout(hbox_layout);
 }
 
 #endif // POINT_CLOUD_VIEWER_H

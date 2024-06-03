@@ -14,8 +14,8 @@ class BaseCloudAligner : public QWidget
     public slots:
         virtual void filterMap() = 0;
         virtual void transformPointCloud() = 0;
-        virtual void hideTarget() = 0;
-        virtual void alignTarget() = 0;
+        virtual void hideMask() = 0;
+        virtual void alignMask() = 0;
         virtual void terminateProgram() = 0;
 };
 
