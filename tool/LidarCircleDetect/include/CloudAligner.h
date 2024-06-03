@@ -26,14 +26,14 @@
 
 // Template class derived from the base class
 template<typename PointT>
-class PointCloudViewer : public BaseCloudAligner
+class CloudAligner : public BaseCloudAligner
 {
     public:
-        PointCloudViewer(const std::string & map_pcd_file_,
+        CloudAligner(const std::string & map_pcd_file_,
                          const std::string & mask_pcd_file_,
                          QWidget *parent_ = nullptr);
 
-        ~PointCloudViewer();
+        ~CloudAligner();
 
     public slots:
 
@@ -113,7 +113,7 @@ class PointCloudViewer : public BaseCloudAligner
 };
 
 template<typename PointT>
-PointCloudViewer<PointT>::PointCloudViewer(const std::string & map_pcd_file_,
+CloudAligner<PointT>::CloudAligner(const std::string & map_pcd_file_,
                                            const std::string & mask_pcd_file_,
                                            QWidget *parent_) :
     BaseCloudAligner    (parent_),
@@ -122,7 +122,7 @@ PointCloudViewer<PointT>::PointCloudViewer(const std::string & map_pcd_file_,
     m_mask_cloud            {new pcl::PointCloud<PointT>},
     m_map_cloud_id          {"map"},
     m_mask_cloud_id         {"mask"},
-    m_viewer                {new pcl::visualization::PCLVisualizer("PointCloudViewer")},
+    m_viewer                {new pcl::visualization::PCLVisualizer("CloudAligner")},
     m_transform_LT          {Eigen::Affine3f::Identity()}
 {
     /* ----- Load Pointclouds from PCD files -----  */
@@ -160,7 +160,7 @@ PointCloudViewer<PointT>::PointCloudViewer(const std::string & map_pcd_file_,
     m_viewer->initCameraParameters();
 
     // Start visualization thread
-    m_vis_thread = std::thread(&PointCloudViewer::visualizationThread, this);
+    m_vis_thread = std::thread(&CloudAligner::visualizationThread, this);
 
     /* ----- Init User Interface -----  */
 
@@ -168,9 +168,9 @@ PointCloudViewer<PointT>::PointCloudViewer(const std::string & map_pcd_file_,
 }
 
 template<typename PointT>
-PointCloudViewer<PointT>::~PointCloudViewer()
+CloudAligner<PointT>::~CloudAligner()
 {
-    std::cout << "~PointCloudViewer() BEGIN" << std::endl;
+    std::cout << "~CloudAligner() BEGIN" << std::endl;
 
     // Set running flag to false and join the visualization thread
     m_running = false;
@@ -180,11 +180,11 @@ PointCloudViewer<PointT>::~PointCloudViewer()
         m_vis_thread.join();
     }
 
-    std::cout << "~PointCloudViewer() END" << std::endl;
+    std::cout << "~CloudAligner() END" << std::endl;
 }
 
 template<typename PointT>
-void PointCloudViewer<PointT>::filterMap()
+void CloudAligner<PointT>::filterMap()
 {
     std::cout << "[filterMap()]: BEGIN" << std::endl;
 
@@ -216,7 +216,7 @@ void PointCloudViewer<PointT>::filterMap()
 }
 
 template<typename PointT>
-void PointCloudViewer<PointT>::transformPointCloud()
+void CloudAligner<PointT>::transformPointCloud()
 {
     std::cout << "transformPointCloud()" << std::endl;
 
@@ -256,7 +256,7 @@ void PointCloudViewer<PointT>::transformPointCloud()
 }
 
 template<typename PointT>
-void PointCloudViewer<PointT>::hideMask()
+void CloudAligner<PointT>::hideMask()
 {
     if (m_mask_shown)
     {
@@ -274,7 +274,7 @@ void PointCloudViewer<PointT>::hideMask()
 }
 
 template <typename PointT>
-void PointCloudViewer<PointT>::alignMask()
+void CloudAligner<PointT>::alignMask()
 {
     std::cout << "alignMask()" << std::endl;
 
@@ -369,7 +369,7 @@ void PointCloudViewer<PointT>::alignMask()
 }
 
 template <typename PointT>
-void PointCloudViewer<PointT>::terminateProgram()
+void CloudAligner<PointT>::terminateProgram()
 {
     std::cout << "terminateProgram()" << std::endl;
 
@@ -378,7 +378,7 @@ void PointCloudViewer<PointT>::terminateProgram()
 }
 
 template <typename PointT>
-void PointCloudViewer<PointT>::initUI()
+void CloudAligner<PointT>::initUI()
 {
     std::cout << "initUI() BEGIN" << std::endl;
 
@@ -427,7 +427,7 @@ void PointCloudViewer<PointT>::initUI()
 
     QPushButton *map_filter_button = new QPushButton("Filter Map");
     layout->addWidget(map_filter_button);
-    connect(map_filter_button, &QPushButton::clicked, this, &PointCloudViewer::filterMap);
+    connect(map_filter_button, &QPushButton::clicked, this, &CloudAligner::filterMap);
 
     /* ----- X Axis Translation Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
@@ -475,31 +475,31 @@ void PointCloudViewer<PointT>::initUI()
 
     QPushButton *transform_button = new QPushButton("Transform");
     layout->addWidget(transform_button);
-    connect(transform_button, &QPushButton::clicked, this, &PointCloudViewer::transformPointCloud);
+    connect(transform_button, &QPushButton::clicked, this, &CloudAligner::transformPointCloud);
 
     /* ----- Hide Mask button ----- */
 
     QPushButton *hide_mask_button = new QPushButton("Hide/Show Mask");
     layout->addWidget(hide_mask_button);
-    connect(hide_mask_button, &QPushButton::clicked, this, &PointCloudViewer::hideMask);
+    connect(hide_mask_button, &QPushButton::clicked, this, &CloudAligner::hideMask);
 
     /* ----- Align Mask button ----- */
 
     QPushButton *align_mask_button = new QPushButton("Align Mask");
     layout->addWidget(align_mask_button);
-    connect(align_mask_button, &QPushButton::clicked, this, &PointCloudViewer::alignMask);
+    connect(align_mask_button, &QPushButton::clicked, this, &CloudAligner::alignMask);
 
     /* ----- Terminate button ----- */
 
     QPushButton *terminateButton = new QPushButton("Terminate");
     layout->addWidget(terminateButton);
-    connect(terminateButton, &QPushButton::clicked, this, &PointCloudViewer::terminateProgram);
+    connect(terminateButton, &QPushButton::clicked, this, &CloudAligner::terminateProgram);
 
     std::cout << "initUI() END" << std::endl;
 }
 
 template <typename PointT>
-void PointCloudViewer<PointT>::visualizationThread()
+void CloudAligner<PointT>::visualizationThread()
 {
     std::cout << "visualizationThread() BEGIN" << std::endl;
 
@@ -513,7 +513,7 @@ void PointCloudViewer<PointT>::visualizationThread()
 }
 
 template <typename PointT>
-void PointCloudViewer<PointT>::appendHorizBoxLayoutToVertLayout(
+void CloudAligner<PointT>::appendHorizBoxLayoutToVertLayout(
     const std::string & horiz_layout_label_,
     const double & spin_box_initial_value_,
     QDoubleSpinBox * & spin_box_,
