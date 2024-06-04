@@ -55,8 +55,10 @@ class CloudAligner : public BaseCloudAligner
         void visualizationThread();
 
         void appendHorizBoxLayoutToVertLayout(const std::string & horiz_layout_label_,
-                                              const double & spin_box_initial_value_,
                                               QDoubleSpinBox * & spin_box_,
+                                              const double & initial_value_,
+                                              const double & min_value_,
+                                              const double & max_value_,
                                               QVBoxLayout * const & vert_layout_);
         
         /* ### ----- Class Attributes ----- ### */
@@ -70,21 +72,31 @@ class CloudAligner : public BaseCloudAligner
         /** Pointcloud of the calibration target mask. */
         typename pcl::PointCloud<PointT>::Ptr m_mask_cloud;
 
+        /** ID of the displayed map cloud, used to distinguish in the PCL visualizer. */
         std::string m_map_cloud_id;
 
+        /** ID of the mask cloud, used to distinguish in the PCL visualizer. */
         std::string m_mask_cloud_id;
 
+        /** PCL visualizer object. */
         pcl::visualization::PCLVisualizer::Ptr m_viewer;
 
-        /** Transform from Lidar to Target frame. (###### ----- THIS IS LIDAR TO MASK!! ---- #####) */
-        Eigen::Affine3f m_transform_LT;
+        /**
+         * Transform from Lidar to Mask frame. After alignement with target, this will hold the
+         * transform from Lidar to estimated Target frame which is the output of this node.
+        */
+        Eigen::Affine3f m_transform_LM;
 
+        /** Thread handling the PCL visualizer update. */
         std::thread m_vis_thread;
 
-        // Atomic flag to control the visualization thread
-        // It ensures that there are no race conditions when checking or setting this flag from different threads.
+        /**
+         * Atomic flag to control the visualization thread. It ensures that there are no race
+         * conditions when checking or setting this flag from different threads.
+        */
         std::atomic<bool> m_running {true};
 
+        /** Flag defining wheter or not the mask is currently displayed in the visualizer. */
         bool m_mask_shown {true}; 
 
         QDoubleSpinBox * m_filter_x_min_spin_box;
@@ -123,7 +135,7 @@ CloudAligner<PointT>::CloudAligner(const std::string & map_pcd_file_,
     m_map_cloud_id          {"map"},
     m_mask_cloud_id         {"mask"},
     m_viewer                {new pcl::visualization::PCLVisualizer("CloudAligner")},
-    m_transform_LT          {Eigen::Affine3f::Identity()}
+    m_transform_LM          {Eigen::Affine3f::Identity()}
 {
     /* ----- Load Pointclouds from PCD files -----  */
 
@@ -240,19 +252,20 @@ void CloudAligner<PointT>::transformPointCloud()
     transform_y.rotate(Eigen::AngleAxisf(angle_y, Eigen::Vector3f::UnitY()));
     transform_z.rotate(Eigen::AngleAxisf(angle_z, Eigen::Vector3f::UnitZ()));
 
-    // Combine the transformations
+    // Combine the rotations as XYZ sequence (wrt fixed axes)!!!
     Eigen::Affine3f combined_transform = transform_z * transform_y * transform_x;
 
     // Apply translation
     combined_transform.translation() << tx, ty, tz;
 
-    // Apply the combined transformation to the point cloud
+    // Apply the combined transformation to the point cloud visualization
     m_viewer->updatePointCloudPose(m_mask_cloud_id, combined_transform);
 
     std::cout << "combined_transform:" << std::endl
               << combined_transform.matrix() << std::endl;
 
-    m_transform_LT = combined_transform;
+    // Keep the current transform saved
+    m_transform_LM = combined_transform;
 }
 
 template<typename PointT>
@@ -267,6 +280,8 @@ void CloudAligner<PointT>::hideMask()
     else
     {
         m_viewer->addPointCloud<PointT>(m_mask_cloud, m_mask_cloud_id);
+        
+        // Re-apply the latest visualization pose transform
         this->transformPointCloud();
 
         m_mask_shown = true;
@@ -278,46 +293,25 @@ void CloudAligner<PointT>::alignMask()
 {
     std::cout << "alignMask()" << std::endl;
 
-    std::cout << "m_transform_LT:" << std::endl
-              << m_transform_LT.matrix() << std::endl;
-    std::cout << "m_transform_LT inverse:" << std::endl
-              << m_transform_LT.inverse().matrix() << std::endl;
-
-    // Create a new temporary pointcloud object identical to the mask
-    pcl::PointCloud<pcl::PointXYZRGB>::Ptr temp_mask_cloud (new pcl::PointCloud<pcl::PointXYZRGB>);
-
-    // Copy the data from the original to the copy
-    pcl::copyPointCloud(*m_mask_cloud, *temp_mask_cloud);
-
-    // Change the color to blue to distinguish it from original mask
-    for (auto it = temp_mask_cloud->points.begin(); it != temp_mask_cloud->points.end(); ++it)
-    {
-        it->r = 0;
-        it->g = 0;
-        it->b = 255;
-    }
-
-    // Transform temp mask using latest transform from user
-    pcl::transformPointCloud(*temp_mask_cloud, *temp_mask_cloud, m_transform_LT);
-
-    // Display as check
-    m_viewer->addPointCloud<pcl::PointXYZRGB>(temp_mask_cloud, "temp_mask_cloud");
-
-    m_viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE,
-                                               1,
-                                               "temp_mask_cloud");
-
-    // Convert temp point cloud from pcl::PointXYZRGB to pcl::PointXYZ
+    // Create a copy of mask cloud of type pcl::PointXYZ (in case mask is not of that type)
     pcl::PointCloud<pcl::PointXYZ>::Ptr temp_mask_cloud_xyz (new pcl::PointCloud<pcl::PointXYZ>());
-    pcl::copyPointCloud(*temp_mask_cloud, *temp_mask_cloud_xyz);
+    pcl::copyPointCloud(*m_mask_cloud, *temp_mask_cloud_xyz);
 
-    // Run ICP between temp mask and filtered map cloud
+    // Apply transformation to temp mask to effectively send it into user defined pose
+    pcl::transformPointCloud(*temp_mask_cloud_xyz, *temp_mask_cloud_xyz, m_transform_LM);
+
+    /* ---- Run ICP between temp mask and filtered map cloud ----- */
+
     pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
 
+    // Map is input since it has lowest number of points belonging to the calibration target
     icp.setInputSource(m_map_cloud_filtered);
+
+    // Mask is target since it has high point density, the idea is that there will exist one
+    // corresponding point in the mask for each point in the real target cloud. 
     icp.setInputTarget(temp_mask_cloud_xyz);
 
-    // Set parameters for G-ICP
+    // Set parameters for ICP
     icp.setMaxCorrespondenceDistance(0.5);      // Maximum distance for correspondence
     icp.setMaximumIterations(2000);             // Maximum number of iterations
     // icp.setTransformationEpsilon(1e-8);         // Convergence criteria
@@ -325,7 +319,7 @@ void CloudAligner<PointT>::alignMask()
 
     std::cout << "Running ICP..." << std::endl;
 
-    // Perform alignment
+    // Perform alignment (i.e. compute T_TM)
     pcl::PointCloud<pcl::PointXYZ>::Ptr aligned_cloud_xyz (new pcl::PointCloud<pcl::PointXYZ>());
     icp.align(*aligned_cloud_xyz);
 
@@ -333,38 +327,55 @@ void CloudAligner<PointT>::alignMask()
 
     if (icp.hasConverged())
     {
-        std::cout << "ICP has converged." << std::endl;
+        std::cout << "ICP has converged!!!" << std::endl;
         std::cout << "Fitness score: " << icp.getFitnessScore() << std::endl;
         
-        Eigen::Affine3f transform_target_mask;
-        transform_target_mask.matrix() = icp.getFinalTransformation();
+        // Transform from calibration target (source) to mask (target)
+        Eigen::Affine3f T_target_mask;
+        T_target_mask.matrix() = icp.getFinalTransformation();
 
-        std::cout << "Transformation matrix: " << std::endl
-                  << transform_target_mask.matrix() << std::endl;
+        std::cout << "T_target_mask (from ICP):" << std::endl
+                  << T_target_mask.matrix() << std::endl;
 
         // Get convergence criteria
         auto criteria = icp.getConvergeCriteria();
 
         std::cout << "Convergence reason: " << criteria->getConvergenceState() << std::endl;
 
-        // Apply the inverse of the just computed transform to move the mask into target position
-        pcl::transformPointCloud(*temp_mask_cloud,
-                                 *temp_mask_cloud,
-                                 transform_target_mask.matrix().inverse());
+        // ----- Compute total transform from lidar to estimated target position ----- //
+        
+        /* 
+         * Total transform is the concatenation of the first transform from lidar
+         * to mask provided by the user, and the (inverse) of the transform
+         * computed by the ICP.
+         * Remark that since both these transforms are performed wrt the fixed lidar frame
+         * axes we have to premultiply the ICP transform!!
+         * Thus:
+         *  
+         * T_LT = T_LM (updated) = T_ICP^-1 * T_LM (from user)  
+         */
+
+        std::cout << "T_target_mask inverse:" << std::endl
+                  << T_target_mask.inverse().matrix() << std::endl;
+
+        std::cout << "m_transform_LM PRE: " << std::endl
+                  << m_transform_LM.matrix() << std::endl;
+
+        m_transform_LM = T_target_mask.inverse() * m_transform_LM;
+
+        std::cout << "Final estimated transform from lidar to target:" << std::endl
+                  << m_transform_LM.matrix() << std::endl;
 
         // Update visualization
-        m_viewer->updatePointCloud(temp_mask_cloud, "temp_mask_cloud");
+        m_viewer->updatePointCloudPose(m_mask_cloud_id, m_transform_LM);
 
         // Compute circle centers wrt new mask pose
-
-        // Compute overall transform from Lidar to (estimated) Target
-        // cc_T = T_TL * cc_L
-        // T_TL = T_TM * T_ML (to understand better)
-
     }
     else
     {
         std::cout << "G-ICP did not converge." << std::endl;
+
+        this->terminateProgram();
     }
 }
 
@@ -390,37 +401,37 @@ void CloudAligner<PointT>::initUI()
     /* ----- X Axis PassThrough Filter Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
     this->appendHorizBoxLayoutToVertLayout("Map X Min:",
-                                           -100.0,
                                            m_filter_x_min_spin_box,
+                                           -100.0, -100.0, 100.0,
                                            layout);
 
     this->appendHorizBoxLayoutToVertLayout("Map X Max:",
-                                           100.0,
                                            m_filter_x_max_spin_box,
+                                           100.0, -100.0, 100.0,
                                            layout);
 
     /* ----- Y Axis PassThrough Filter Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
     this->appendHorizBoxLayoutToVertLayout("Map Y Min:",
-                                           -100.0,
                                            m_filter_y_min_spin_box,
+                                           -100.0, -100.0, 100.0,
                                            layout);
 
     this->appendHorizBoxLayoutToVertLayout("Map Y Max:",
-                                           100.0,
                                            m_filter_y_max_spin_box,
+                                           100.0, -100.0, 100.0,
                                            layout);
 
     /* ----- Z Axis PassThrough Filter Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
     this->appendHorizBoxLayoutToVertLayout("Map Z Min:",
-                                           -100.0,
                                            m_filter_z_min_spin_box,
+                                           -100.0, -100.0, 100.0,
                                            layout);
 
     this->appendHorizBoxLayoutToVertLayout("Map Z Max:",
-                                           100.0,
                                            m_filter_z_max_spin_box,
+                                           100.0, -100.0, 100.0,
                                            layout);
 
     /* ----- Map Cloud Filter button ----- */
@@ -432,43 +443,43 @@ void CloudAligner<PointT>::initUI()
     /* ----- X Axis Translation Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
     this->appendHorizBoxLayoutToVertLayout("Trans X:",
-                                           0.0,
                                            m_trans_x_spin_box,
+                                           0.0, -100.0, 100.0,
                                            layout);
 
     /* ----- Y Axis Translation Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
     this->appendHorizBoxLayoutToVertLayout("Trans Y:",
-                                           0.0,
                                            m_trans_y_spin_box,
+                                           0.0, -100.0, 100.0,
                                            layout);
 
     /* ----- Z Axis Translation Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
     this->appendHorizBoxLayoutToVertLayout("Trans Z:",
-                                           0.0,
                                            m_trans_z_spin_box,
+                                           0.0, -100.0, 100.0,
                                            layout);
 
     /* ----- X Axis Rotation Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
     this->appendHorizBoxLayoutToVertLayout("Rot X:",
-                                           0.0,
                                            m_rot_x_spin_box,
+                                           0.0, -180.0, 180.0,
                                            layout);
 
     /* ----- Y Axis Rotation Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
     this->appendHorizBoxLayoutToVertLayout("Rot Y:",
-                                           0.0,
                                            m_rot_y_spin_box,
+                                           0.0, -180.0, 180.0,
                                            layout);
 
     /* ----- Z Axis Rotation Horizontal Layout (QLabel + QDoubleSpinBox) ----- */
 
     this->appendHorizBoxLayoutToVertLayout("Rot Z:",
-                                           0.0,
                                            m_rot_z_spin_box,
+                                           0.0, -180.0, 180.0,
                                            layout);
 
     /* ----- Transform button ----- */
@@ -513,21 +524,21 @@ void CloudAligner<PointT>::visualizationThread()
 }
 
 template <typename PointT>
-void CloudAligner<PointT>::appendHorizBoxLayoutToVertLayout(
-    const std::string & horiz_layout_label_,
-    const double & spin_box_initial_value_,
-    QDoubleSpinBox * & spin_box_,
-    QVBoxLayout * const & vert_layout_
-)
+void CloudAligner<PointT>::appendHorizBoxLayoutToVertLayout(const std::string & horiz_layout_label_,
+                                                            QDoubleSpinBox * & spin_box_,
+                                                            const double & initial_value_,
+                                                            const double & min_value_,
+                                                            const double & max_value_,
+                                                            QVBoxLayout * const & vert_layout_)
 {
     // Create a QLabel to act as the label for the spin box
     QLabel * q_label = new QLabel(horiz_layout_label_.c_str());
 
     // Create Spin Box
     spin_box_ = new QDoubleSpinBox;
-    spin_box_->setRange(-100.0, 100.0);
+    spin_box_->setRange(min_value_, max_value_);
     spin_box_->setSingleStep(1.0);
-    spin_box_->setValue(spin_box_initial_value_);
+    spin_box_->setValue(initial_value_);
 
     // Create the horizontal box layout object
     QHBoxLayout * hbox_layout = new QHBoxLayout;
@@ -535,12 +546,13 @@ void CloudAligner<PointT>::appendHorizBoxLayoutToVertLayout(
     // Add the label and the spin box to the layout
     hbox_layout->addWidget(q_label);
     hbox_layout->addWidget(spin_box_);
-
-    /* Add the QHBoxLayout to the existing QVBoxLayout
-       Don't worry about pointed memory region handling: in Qt the parent takes ownership
-       of the added layout. Specifically, vert_layout_ will be responsible for deleting
-       hbox_layout when vert_layout_ itself is deleted, ensuring that there are no memory leaks.
-    */
+ 
+    /*
+     * Add the QHBoxLayout to the existing QVBoxLayout.
+     * Don't worry about pointed memory region handling: in Qt the parent takes ownership
+     * of the added layout. Specifically, vert_layout_ will be responsible for deleting
+     * hbox_layout when vert_layout_ itself is deleted, ensuring that there are no memory leaks.
+     */
     vert_layout_->addLayout(hbox_layout);
 }
 
