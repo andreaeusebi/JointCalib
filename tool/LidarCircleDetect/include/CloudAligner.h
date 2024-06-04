@@ -3,6 +3,7 @@
 
 /** System Includes */
 #include <thread>
+#include <mutex> 
 
 /* QT Includes */
 #include <QVBoxLayout>
@@ -81,11 +82,17 @@ class CloudAligner : public BaseCloudAligner
         /** PCL visualizer object. */
         pcl::visualization::PCLVisualizer::Ptr m_viewer;
 
+        /** Mutex for handling access to m_viewer from different threads. */
+        std::mutex m_mutex_viewer;
+
         /**
          * Transform from Lidar to Mask frame. After alignement with target, this will hold the
          * transform from Lidar to estimated Target frame which is the output of this node.
         */
         Eigen::Affine3f m_transform_LM;
+
+        /** Flag defining if mask-target alignement has been done. */
+        bool m_alignement_done {false};
 
         /** Thread handling the PCL visualizer update. */
         std::thread m_vis_thread;
@@ -96,8 +103,8 @@ class CloudAligner : public BaseCloudAligner
         */
         std::atomic<bool> m_running {true};
 
-        /** Flag defining wheter or not the mask is currently displayed in the visualizer. */
-        bool m_mask_shown {true}; 
+        /** Flag defining if the mask is currently displayed in the visualizer. */
+        std::atomic<bool> m_mask_shown {true};
 
         QDoubleSpinBox * m_filter_x_min_spin_box;
 
@@ -224,13 +231,22 @@ void CloudAligner<PointT>::filterMap()
                              
     filter_z.filter(*m_map_cloud_filtered);
 
+    m_mutex_viewer.lock();
     m_viewer->updatePointCloud(m_map_cloud_filtered, m_map_cloud_id);
+    m_mutex_viewer.unlock();
 }
 
 template<typename PointT>
 void CloudAligner<PointT>::transformPointCloud()
 {
     std::cout << "transformPointCloud()" << std::endl;
+
+    // Check if the alignement has already been done, in that case avoid further transform
+    if (m_alignement_done)
+    {
+        std::cout << "Alignement already done! Can't apply further transform!" << std::endl;
+        return;
+    }
 
     // Get translation values from the spin boxes
     float tx = m_trans_x_spin_box->value();
@@ -259,7 +275,9 @@ void CloudAligner<PointT>::transformPointCloud()
     combined_transform.translation() << tx, ty, tz;
 
     // Apply the combined transformation to the point cloud visualization
+    m_mutex_viewer.lock();
     m_viewer->updatePointCloudPose(m_mask_cloud_id, combined_transform);
+    m_mutex_viewer.unlock();
 
     std::cout << "combined_transform:" << std::endl
               << combined_transform.matrix() << std::endl;
@@ -271,21 +289,36 @@ void CloudAligner<PointT>::transformPointCloud()
 template<typename PointT>
 void CloudAligner<PointT>::hideMask()
 {
+    std::cout << "hideMask() - BEGIN" << std::endl;
+
     if (m_mask_shown)
     {
+        std::cout << "Removing pointcloud..." << std::endl;
+
+        m_mutex_viewer.lock();
         m_viewer->removePointCloud(m_mask_cloud_id);
+        m_mutex_viewer.unlock();
 
         m_mask_shown = false;
+        std::cout << "Pointcloud removed" << std::endl;
     }
     else
     {
+        std::cout << "Adding pointcloud..." << std::endl;
+        
+        m_mutex_viewer.lock();
         m_viewer->addPointCloud<PointT>(m_mask_cloud, m_mask_cloud_id);
         
         // Re-apply the latest visualization pose transform
-        this->transformPointCloud();
+        m_viewer->updatePointCloudPose(m_mask_cloud_id, m_transform_LM);
+        m_mutex_viewer.unlock();
 
         m_mask_shown = true;
+
+        std::cout << "Pointcloud added" << std::endl;
     }
+
+    std::cout << "hideMask() - END" << std::endl;
 }
 
 template <typename PointT>
@@ -367,9 +400,13 @@ void CloudAligner<PointT>::alignMask()
                   << m_transform_LM.matrix() << std::endl;
 
         // Update visualization
+        m_mutex_viewer.lock();
         m_viewer->updatePointCloudPose(m_mask_cloud_id, m_transform_LM);
+        m_mutex_viewer.unlock();
 
         // Compute circle centers wrt new mask pose
+
+        m_alignement_done = true;
     }
     else
     {
@@ -516,7 +553,9 @@ void CloudAligner<PointT>::visualizationThread()
 
     while (m_running)
     {
+        m_mutex_viewer.lock();
         m_viewer->spinOnce(100); // Update viewer
+        m_mutex_viewer.unlock();
         std::this_thread::sleep_for(std::chrono::milliseconds(100)); // Sleep to reduce CPU usage
     }
 
