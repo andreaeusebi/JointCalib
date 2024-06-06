@@ -24,6 +24,7 @@
 
 /* Local Includes */
 #include "BaseCloudAligner.h"
+#include "CalibrationTargetMask.h"  // to get access to Point2D class
 
 // Template class derived from the base class
 template<typename PointT>
@@ -72,6 +73,9 @@ class CloudAligner : public BaseCloudAligner
 
         /** Pointcloud of the calibration target mask. */
         typename pcl::PointCloud<PointT>::Ptr m_mask_cloud;
+
+        /** Pointcloud made of the calibration target circles centers.  */
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr m_circles_centers_cloud;
 
         /** ID of the displayed map cloud, used to distinguish in the PCL visualizer. */
         std::string m_map_cloud_id;
@@ -139,6 +143,7 @@ CloudAligner<PointT>::CloudAligner(const std::string & map_pcd_file_,
     m_map_cloud             {new pcl::PointCloud<pcl::PointXYZ>},
     m_map_cloud_filtered    {new pcl::PointCloud<pcl::PointXYZ>},
     m_mask_cloud            {new pcl::PointCloud<PointT>},
+    m_circles_centers_cloud {new pcl::PointCloud<pcl::PointXYZRGB>},
     m_map_cloud_id          {"map"},
     m_mask_cloud_id         {"mask"},
     m_viewer                {new pcl::visualization::PCLVisualizer("CloudAligner")},
@@ -360,6 +365,8 @@ void CloudAligner<PointT>::alignMask()
 
     if (icp.hasConverged())
     {
+        m_alignement_done = true;
+
         std::cout << "ICP has converged!!!" << std::endl;
         std::cout << "Fitness score: " << icp.getFitnessScore() << std::endl;
         
@@ -404,9 +411,58 @@ void CloudAligner<PointT>::alignMask()
         m_viewer->updatePointCloudPose(m_mask_cloud_id, m_transform_LM);
         m_mutex_viewer.unlock();
 
-        // Compute circle centers wrt new mask pose
+        // ----- Compute circle centers wrt estimated target pose ----- //
 
-        m_alignement_done = true;
+        // Coordinates (in meters) of the holes centers in the calibration target
+        // REMARK: FOR NOW THEY ARE COPYED AND PASTED HERE FROM CALIBRATION TARGET
+        // WE CAN'T USE CALIB TARGET OBJECT BECAUSE IT HAS A PCL VIEWER INSIDE!!
+        // SOLVE THIS ISSUE!!
+
+        const std::vector<Point2D> circles_centers {
+            Point2D(0.3, 0.3),  // top left circle
+            Point2D(0.3, 0.9),  // top right circle
+            Point2D(0.9, 0.3),  // bottom left circle
+            Point2D(0.9, 0.9)   // bottom right circle
+        };
+
+        for (auto i_cc_iter = circles_centers.cbegin();
+             i_cc_iter != circles_centers.cend();
+             ++i_cc_iter)
+        {
+            pcl::PointXYZRGB cc_cloud_point;
+
+            cc_cloud_point.x = i_cc_iter->x;
+            cc_cloud_point.y = i_cc_iter->y;
+            cc_cloud_point.z = 0.0;
+            cc_cloud_point.r = 255;
+            cc_cloud_point.g = 255;
+            cc_cloud_point.b = 0;
+
+            m_circles_centers_cloud->push_back(cc_cloud_point);
+        }
+
+        // Transform into extimated target frame
+        pcl::transformPointCloud(*m_circles_centers_cloud, *m_circles_centers_cloud, m_transform_LM);
+
+        // Display circle centers into the visualizer
+        m_mutex_viewer.lock();
+        m_viewer->addPointCloud<pcl::PointXYZRGB>(m_circles_centers_cloud, "circles_centers");
+        m_viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE,
+                                                   5,
+                                                   "circles_centers");
+        m_mutex_viewer.unlock();
+
+        std::cout << "Coordinates of the circles center wrt lidar frame:" << std::endl;
+
+        for (auto cc_point_iter = m_circles_centers_cloud->begin();
+             cc_point_iter != m_circles_centers_cloud->end();
+             ++cc_point_iter)
+        {
+            std::cout << "(" << cc_point_iter->x << ","
+                             << cc_point_iter->y << ","
+                             << cc_point_iter->z
+                      << ")" << std::endl;
+        }
     }
     else
     {
