@@ -1,0 +1,9 @@
+<launch>
+    <node pkg="msg_saver_pkg" type="msg_saver_node" name="msg_saver_node" output="screen">
+        <param name="pointcloud1_topic" value="/laser/left/data"/>
+        <param name="pointcloud2_topic" value="/laser/right/data"/>
+        <param name="image_topic"       value="/camera/image_raw"/>
+        <param name="camera_info_topic" value="/camera/camera_info"/>
+        <param name="save_directory"    value="/home/andrea/data/calibration_sensor_data/original"/> <!-- Set the save directory here -->
+    </node>
+</launch>
