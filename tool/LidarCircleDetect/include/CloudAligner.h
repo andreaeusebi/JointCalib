@@ -3,7 +3,10 @@
 
 /** System Includes */
 #include <thread>
-#include <mutex> 
+#include <mutex>
+#include <filesystem>
+#include <iostream>
+#include <fstream>
 
 /* QT Includes */
 #include <QVBoxLayout>
@@ -32,8 +35,9 @@ class CloudAligner : public BaseCloudAligner
 {
     public:
         CloudAligner(const std::string & map_pcd_file_,
-                         const std::string & mask_pcd_file_,
-                         QWidget *parent_ = nullptr);
+                     const std::string & mask_pcd_file_,
+                     const std::string & results_file_,
+                     QWidget *parent_ = nullptr);
 
         ~CloudAligner();
 
@@ -46,6 +50,8 @@ class CloudAligner : public BaseCloudAligner
         void hideMask() override;
 
         void alignMask() override;
+
+        void saveResults() override;
 
         void terminateProgram() override;
 
@@ -110,6 +116,12 @@ class CloudAligner : public BaseCloudAligner
         /** Flag defining if the mask is currently displayed in the visualizer. */
         std::atomic<bool> m_mask_shown {true};
 
+        /** CSV file in which storing (appending if it already exists) the circle centers coordinates. */
+        std::string m_results_file;
+
+        /** Flag indicating wheter results have been saved or not. */
+        bool m_results_saved {false};
+
         QDoubleSpinBox * m_filter_x_min_spin_box;
 
         QDoubleSpinBox * m_filter_x_max_spin_box;
@@ -137,9 +149,10 @@ class CloudAligner : public BaseCloudAligner
 
 template<typename PointT>
 CloudAligner<PointT>::CloudAligner(const std::string & map_pcd_file_,
-                                           const std::string & mask_pcd_file_,
-                                           QWidget *parent_) :
-    BaseCloudAligner    (parent_),
+                                   const std::string & mask_pcd_file_,
+                                   const std::string & results_file_,
+                                   QWidget *parent_) :
+    BaseCloudAligner        (parent_),
     m_map_cloud             {new pcl::PointCloud<pcl::PointXYZ>},
     m_map_cloud_filtered    {new pcl::PointCloud<pcl::PointXYZ>},
     m_mask_cloud            {new pcl::PointCloud<PointT>},
@@ -147,7 +160,8 @@ CloudAligner<PointT>::CloudAligner(const std::string & map_pcd_file_,
     m_map_cloud_id          {"map"},
     m_mask_cloud_id         {"mask"},
     m_viewer                {new pcl::visualization::PCLVisualizer("CloudAligner")},
-    m_transform_LM          {Eigen::Affine3f::Identity()}
+    m_transform_LM          {Eigen::Affine3f::Identity()},
+    m_results_file          {results_file_}
 {
     /* ----- Load Pointclouds from PCD files -----  */
 
@@ -473,6 +487,60 @@ void CloudAligner<PointT>::alignMask()
 }
 
 template <typename PointT>
+void CloudAligner<PointT>::saveResults()
+{
+    std::cout << "saveResults()" << std::endl;
+
+    if (m_circles_centers_cloud->size() != 4)
+    {
+        std::cout << "ERROR! m_circles_centers_cloud->size() != 4" << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
+    bool file_exists = std::filesystem::exists(m_results_file);
+
+    std::ofstream file;
+
+    // Open file in append mode
+    file.open(m_results_file, std::ios_base::app);
+
+    if (! file.is_open())
+    {
+        std::cout << "ERROR! File not opened!" << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
+    // If file doesn't exist, write the header
+    if (!file_exists)
+    {
+        std::string header = "left_top_x,left_top_y,left_top_z,"
+                             "right_top_x,right_top_y,right_top_z,"
+                             "right_bottom_x,right_bottom_y,right_bottom_z,"
+                             "left_bottom_x,left_bottom_y,left_bottom_z";
+
+        file << header << '\n';
+    }
+
+    // Collect points coodinates
+    pcl::PointXYZRGB point_top_left     {m_circles_centers_cloud->points[0]};
+    pcl::PointXYZRGB point_top_right    {m_circles_centers_cloud->points[1]};
+    pcl::PointXYZRGB point_bottom_right {m_circles_centers_cloud->points[3]}; // bottom right is the fourth!
+    pcl::PointXYZRGB point_bottom_left  {m_circles_centers_cloud->points[2]}; // bottom left is the third!
+
+    // Append the content
+    file << point_top_left.x     << "," << point_top_left.y     << "," << point_top_left.z     << ","
+         << point_top_right.x    << "," << point_top_right.y    << "," << point_top_right.z    << ","
+         << point_bottom_right.x << "," << point_bottom_right.y << "," << point_bottom_right.z << ","
+         << point_bottom_left.x  << "," << point_bottom_left.y  << "," << point_bottom_left.z  << "\n";
+
+    file.close();
+
+    std::cout << "Results correctly saved!" << std::endl;
+
+    m_results_saved = true;
+}
+
+template <typename PointT>
 void CloudAligner<PointT>::terminateProgram()
 {
     std::cout << "terminateProgram()" << std::endl;
@@ -592,6 +660,12 @@ void CloudAligner<PointT>::initUI()
     QPushButton *align_mask_button = new QPushButton("Align Mask");
     layout->addWidget(align_mask_button);
     connect(align_mask_button, &QPushButton::clicked, this, &CloudAligner::alignMask);
+
+    /* ----- Save Results button ----- */
+
+    QPushButton *save_results_button = new QPushButton("Save Results");
+    layout->addWidget(save_results_button);
+    connect(save_results_button, &QPushButton::clicked, this, &CloudAligner::saveResults);
 
     /* ----- Terminate button ----- */
 
