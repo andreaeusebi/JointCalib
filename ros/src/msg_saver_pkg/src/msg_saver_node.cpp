@@ -27,6 +27,8 @@ sensor_msgs::PointCloud2::ConstPtr g_latest_pointcloud2;
 sensor_msgs::Image::ConstPtr g_latest_image;
 sensor_msgs::CameraInfo::ConstPtr g_latest_camera_info;
 
+ros::Subscriber g_camera_info_sub;
+
 // Topic names
 std::string g_pointcloud1_topic;
 std::string g_pointcloud2_topic;
@@ -64,11 +66,18 @@ bool directoryExists(const std::string& dir)
 }
 
 // Function to sanitize topic names
-std::string sanitizeTopicName(const std::string& topic)
-{
+std::string sanitizeTopicName(const std::string& topic) {
     std::string sanitized = topic;
+
+    // Check if the first character is a special character
+    if (!sanitized.empty() && !std::isalnum(sanitized[0]) && sanitized[0] != '_') {
+        sanitized.erase(sanitized.begin()); // Remove the first character
+    }
+
+    // Replace the remaining special characters with underscores
     std::replace_if(sanitized.begin(), sanitized.end(),
         [](char c) { return !std::isalnum(c) && c != '_'; }, '_');
+
     return sanitized;
 }
 
@@ -153,9 +162,33 @@ bool saveData(std_srvs::Empty::Request& req, std_srvs::Empty::Response& res)
         std::ofstream file(camera_info_path);
         file << "Width: " << g_latest_camera_info->width << "\n";
         file << "Height: " << g_latest_camera_info->height << "\n";
+        
+        file << "Camera matrix: " << "[";
+        for (auto it = g_latest_camera_info->K.cbegin();
+             it != g_latest_camera_info->K.cend();
+             ++it)
+        {
+            file << *it << " ";
+        }
+        file << "]" << "\n";
+
+        file << "Distortion coeffs: " << "[";
+        for (auto it = g_latest_camera_info->D.cbegin();
+             it != g_latest_camera_info->D.cend();
+             ++it)
+        {
+            file << *it << " ";
+        }
+        file << "]" << "\n";
+
         // You can add more camera info details here
         file.close();
         ROS_INFO("Saved %s", camera_info_path.c_str());
+
+        // Shutdown the subscriber since it is useless to save its data multiple times
+        g_camera_info_sub.shutdown();
+        // Reset the pointer message
+        g_latest_camera_info = nullptr;
     }
     g_mtx_camera_info.unlock();
 
@@ -194,7 +227,7 @@ int main(int argc, char** argv)
     }
 
     // Subscribers
-    ros::Subscriber pointcloud1_sub, pointcloud2_sub, image_sub, camera_info_sub;
+    ros::Subscriber pointcloud1_sub, pointcloud2_sub, image_sub;
 
     if (!g_pointcloud1_topic.empty())
     {
@@ -210,7 +243,7 @@ int main(int argc, char** argv)
     }
     if (!g_camera_info_topic.empty())
     {
-        camera_info_sub = nh.subscribe(g_camera_info_topic, 10, cameraInfoCallback);
+        g_camera_info_sub = nh.subscribe(g_camera_info_topic, 10, cameraInfoCallback);
     }
 
     // Service to save data
