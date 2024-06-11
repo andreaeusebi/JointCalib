@@ -26,3 +26,9 @@ target_link_libraries(${PROJECT_NAME} ceres libjsoncpp.a ${OpenCV_LIBS})
 add_executable(lidar2camera src/lidar2camera.cpp)
 target_link_libraries(lidar2camera ${PROJECT_NAME})
 target_link_libraries(lidar2camera ceres)
+
+##### ----- Test Nodes ----- #####
+
+add_executable(camera_calibration_test test/camera_calibration_test.cpp)
+target_link_libraries(camera_calibration_test ${OpenCV_LIBRARIES})
+target_include_directories(camera_calibration_test PUBLIC ${OpenCV_INCLUDE_DIRS})
